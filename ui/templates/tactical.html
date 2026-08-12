@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FootballVision — Tactical Analysis</title>
+<style>
+  :root {
+    --bg: #0a0c11;
+    --panel: #12151d;
+    --card: #171b25;
+    --border: #262b38;
+    --text: #e8eaed;
+    --muted: #9aa0a6;
+    --dim: #6b7280;
+    --accent: #ff6f3c;
+    --ok: #22c55e;
+    --warn: #f5c542;
+    --err: #e5484d;
+    --teamA: #e5484d;
+    --teamB: #3b82f6;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 372px;
+    grid-template-rows: 54px 1fr;
+    height: 100vh;
+  }
+
+  /* Top bar */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { font-weight: 700; letter-spacing: .02em; }
+  .brand span { color: var(--accent); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+  .spacer { flex: 1; }
+  .meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .btn {
+    padding: 7px 15px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 13px; cursor: pointer;
+    transition: .15s;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: #ef5f2b; color: #fff; }
+  .btn.danger { border-color: var(--err); color: var(--err); }
+
+  /* Main area */
+  .main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .notice {
+    margin: 10px 14px 0; padding: 9px 12px; border-radius: 8px;
+    background: rgba(245,197,66,.10); border: 1px solid var(--warn);
+    color: #f3dfa2; font-size: 12.5px; display: none;
+  }
+  .notice.err { background: rgba(229,72,77,.10); border-color: var(--err); color: #f5b8ba; }
+
+  .stage { flex: 1; display: grid; grid-template-rows: 0.85fr 1.15fr; gap: 10px; padding: 10px 14px 14px; min-height: 0; }
+  .pane {
+    position: relative; background: #000; border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+    min-height: 0;
+  }
+  .pane.pitch { background: radial-gradient(circle at 50% 40%, #13351f, #0a1c11); }
+  /* width/height 100% + object-fit, rather than max-*: a flex child with
+     max-height:100% inside a grid row of indefinite height collapses to 0. */
+  #video-frame { width: 100%; height: 100%; object-fit: contain; display: none; }
+  #pitch-canvas { width: 100%; height: 100%; object-fit: contain; }
+  .pane-tag {
+    position: absolute; top: 9px; left: 10px; display: flex; gap: 6px; z-index: 2;
+  }
+  .chip {
+    background: rgba(0,0,0,.65); border: 1px solid var(--border); border-radius: 20px;
+    padding: 3px 10px; font-size: 11px; color: var(--muted); backdrop-filter: blur(6px);
+  }
+  .chip.ok { border-color: var(--ok); color: var(--ok); }
+  .chip.warn { border-color: var(--warn); color: var(--warn); }
+  .empty { color: var(--dim); font-size: 13px; text-align: center; padding: 20px; }
+
+  /* Sidebar */
+  .side {
+    background: var(--panel); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
+  .card-t {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 10px;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+
+  .counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; }
+  .count-v { font-size: 20px; font-weight: 700; }
+  .count-l { font-size: 9.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin-top: 1px; }
+
+  .trow { display: flex; align-items: center; gap: 9px; font-size: 13px; margin-bottom: 6px; }
+  .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  .trow .n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .pending { font-size: 11.5px; color: var(--warn); margin-top: 4px; }
+
+  .bar { display: flex; height: 13px; border-radius: 7px; overflow: hidden; background: #0d1017; margin-bottom: 5px; }
+  .bar i { display: block; transition: width .4s; }
+  .bar-lbl { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 11px; font-variant-numeric: tabular-nums; }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 12.5px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-variant-numeric: tabular-nums; }
+  .toggles { margin-top: 11px; display: flex; flex-direction: column; gap: 6px; }
+  .toggles label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+
+  .sim-row { display: flex; gap: 10px; align-items: center; background: #0f1219; border-radius: 8px; padding: 7px; margin-bottom: 7px; }
+  .sim-pitch { border-radius: 4px; flex: none; }
+  .sim-pct { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .ask-in { display:flex; gap:7px; margin-bottom:9px; }
+  .ask-in input {
+    flex:1; min-width:0; padding:8px 10px; border-radius:7px; font-size:12.5px;
+    background:#0d1017; border:1px solid var(--border); color:var(--text);
+  }
+  .ask-in input:focus { outline:none; border-color:var(--accent); }
+  .ask-chip {
+    display:inline-block; font-size:11px; color:var(--muted); background:#0d1017;
+    border:1px solid var(--border); border-radius:14px; padding:3px 9px;
+    margin:0 5px 5px 0; cursor:pointer;
+  }
+  .ask-chip:hover { border-color:var(--accent); color:var(--accent); }
+  .ask-ans { font-size:12.5px; line-height:1.55; background:#0f1219; border-radius:8px; padding:10px; margin-top:8px; }
+  .ask-meta { font-size:10.5px; color:var(--dim); margin-top:7px; }
+  .ask-meta a { color:var(--muted); cursor:pointer; text-decoration:underline; }
+  .facts-box {
+    display:none; margin-top:7px; max-height:190px; overflow-y:auto;
+    background:#080a0e; border:1px solid var(--border); border-radius:7px;
+    padding:9px; font:10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color:var(--muted); white-space:pre-wrap;
+  }
+  .timings { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+  /* Modal */
+  .overlay {
+    position: fixed; inset: 0; z-index: 100; background: rgba(6,8,13,.78);
+    backdrop-filter: blur(6px); display: none; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity .18s;
+  }
+  .overlay.open { display: flex; opacity: 1; }
+  .modal {
+    width: min(620px, 93vw); background: linear-gradient(180deg, #1b1f2a, #12151d);
+    border: 1px solid var(--border); border-radius: 15px; padding: 24px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.6);
+    transform: translateY(8px) scale(.985); transition: transform .18s;
+  }
+  .overlay.open .modal { transform: none; }
+  .modal h2 { font-size: 18px; margin-bottom: 4px; }
+  .modal .sub { font-size: 12.5px; color: var(--muted); margin-bottom: 16px; }
+  #source-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 54vh; overflow-y: auto; padding-right: 4px; }
+  .section-label {
+    grid-column: 1 / -1; font-size: 10px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--dim); margin: 8px 0 -2px;
+  }
+  .section-sub { display: block; font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+  .src-card {
+    border: 1px solid var(--border); background: #14181f; border-radius: 10px; padding: 13px;
+    cursor: pointer; text-align: left; color: var(--text); transition: .15s;
+  }
+  .src-card:hover { border-color: var(--accent); background: rgba(255,111,60,.07); transform: translateY(-1px); }
+  .src-icon { width: 100%; aspect-ratio: 16/9; border-radius: 6px; margin-bottom: 9px; border: 1.5px solid var(--dim); position: relative; }
+  .src-card:hover .src-icon { border-color: var(--accent); }
+  .src-icon.mon::after {
+    content:""; position:absolute; left:50%; bottom:-6px; transform:translateX(-50%);
+    width:32%; height:3.5px; background: var(--dim); border-radius:0 0 3px 3px;
+  }
+  .src-card:hover .src-icon.mon::after { background: var(--accent); }
+  .src-icon.film { background: repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0 7px, transparent 7px 14px); }
+  .src-name { font-size: 13.5px; font-weight: 600; }
+  .src-meta { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+  .src-meta.warn-text { color: var(--warn); }
+  .badge { font-size: 9px; text-transform: uppercase; letter-spacing:.05em; background: var(--accent); color:#fff; border-radius:3px; padding:1.5px 5px; }
+  .perm-warn {
+    grid-column: 1 / -1; background: rgba(245,197,66,.10); border: 1px solid var(--warn);
+    border-radius: 9px; padding: 11px 13px; font-size: 12px; color: #f3dfa2; line-height: 1.5;
+  }
+  .modal-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+  .link { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+  .link:hover { color: var(--text); }
+  .modal-state { text-align: center; padding: 26px 0; color: var(--muted); font-size: 13px; }
+  .spinner {
+    width: 21px; height: 21px; border-radius: 50%; border: 2px solid var(--border);
+    border-top-color: var(--accent); margin: 0 auto 9px; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  code { background: #0d1017; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<!-- Source picker -->
+<div class="overlay" id="source-modal">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h2>Choose what to analyse</h2>
+    <div class="sub">A video file is the most reliable option. Screen capture only sees what macOS is actually rendering.</div>
+    <div id="source-grid"></div>
+    <div id="source-state" class="modal-state" style="display:none"></div>
+    <div class="modal-foot">
+      <span class="muted">Analysis runs at roughly 4 frames per second.</span>
+      <button class="link" id="modal-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+
+  <header class="topbar">
+    <div class="brand">Football<span>Vision</span></div>
+    <div class="dot" id="status-dot"></div>
+    <span class="meta" id="status-text">Idle</span>
+    <span class="meta" id="source-label"></span>
+    <div class="spacer"></div>
+    <span class="meta" id="elapsed">00:00</span>
+    <span class="meta" id="frame-counter">Frame 0</span>
+    <button class="btn primary" id="btn-start">Start Analysis</button>
+    <button class="btn danger" id="btn-stop" style="display:none">Stop</button>
+  </header>
+
+  <main class="main">
+    <div class="notice" id="notice"></div>
+    <div class="stage">
+      <div class="pane">
+        <div class="pane-tag">
+          <span class="chip" id="fps-chip">0 fps</span>
+        </div>
+        <img id="video-frame" alt="annotated feed" />
+        <div class="empty" id="video-empty">Press <b>Start Analysis</b> and pick a source.</div>
+      </div>
+      <div class="pane pitch">
+        <div class="pane-tag">
+          <span class="chip warn" id="cal-chip">Not calibrated</span>
+        </div>
+        <canvas id="pitch-canvas" width="900" height="620"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <aside class="side">
+
+    <div class="card">
+      <div class="card-t">Detected</div>
+      <div class="counts">
+        <div><div class="count-v" id="n-players" style="color:var(--accent)">0</div><div class="count-l">Players</div></div>
+        <div><div class="count-v" id="n-gk" style="color:var(--ok)">0</div><div class="count-l">Keepers</div></div>
+        <div><div class="count-v" id="n-ref" style="color:var(--warn)">0</div><div class="count-l">Refs</div></div>
+        <div><div class="count-v" id="n-ball">0</div><div class="count-l">Ball</div></div>
+      </div>
+      <div class="timings" id="timings" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-t">Teams</div>
+      <div class="trow"><span class="swatch" style="background:var(--teamA)"></span> Team A <span class="n" id="count-a">0</span></div>
+      <div class="trow"><span class="swatch" style="background:var(--teamB)"></span> Team B <span class="n" id="count-b">0</span></div>
+      <div class="trow" id="row-unassigned" style="display:none"><span class="swatch" style="background:#9aa0a6"></span> Unassigned <span class="n" id="count-u">0</span></div>
+      <div class="pending" id="team-pending">Learning kit colours from the opening frames…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-t">Structured concepts</div>
+      <div id="concepts-none" class="muted">Waiting for both teams to be on the pitch.</div>
+      <div id="concepts-body" style="display:none">
+        <div class="muted" style="margin-bottom:5px">Pitch control (Voronoi)</div>
+        <div class="bar">
+          <i id="ctrl-a" style="width:50%;background:var(--teamA)"></i>
+          <i id="ctrl-b" style="width:50%;background:var(--teamB)"></i>
+        </div>
+        <div class="bar-lbl">
+          <span style="color:var(--teamA)" id="ctrl-a-pct">50%</span>
+          <span style="color:var(--teamB)" id="ctrl-b-pct">50%</span>
+        </div>
+        <div class="kv">
+          <span class="k">Compactness A</span><span class="v" id="cmp-a">–</span>
+          <span class="k">Compactness B</span><span class="v" id="cmp-b">–</span>
+          <span class="k">Width A / B</span><span class="v" id="wid-ab">–</span>
+          <span class="k">Line height A / B</span><span class="v" id="lin-ab">–</span>
+          <span class="k">Pressing (avg)</span><span class="v" id="press">–</span>
+        </div>
+        <div class="toggles">
+          <label><input type="checkbox" id="toggle-control" checked /> Shade pitch control</label>
+          <label><input type="checkbox" id="toggle-hull" checked /> Show team shape</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-t">Ask the match</div>
+      <div class="muted" style="margin-bottom:9px">Answered only from what the vision pipeline measured. If the data does not cover it, it says so instead of guessing.</div>
+      <div class="ask-in">
+        <input id="ask-input" placeholder="Which team is pressing higher?" />
+        <button class="btn primary" id="btn-ask">Ask</button>
+      </div>
+      <div>
+        <span class="ask-chip" data-q="Which team is pressing higher up the pitch?">pressing higher?</span>
+        <span class="ask-chip" data-q="Which team is more compact, and by how much?">more compact?</span>
+        <span class="ask-chip" data-q="Where is the space on the pitch right now?">where's the space?</span>
+        <span class="ask-chip" data-q="Who scored the opening goal?">unanswerable test</span>
+      </div>
+      <div id="ask-answer"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-t">Similar situations</div>
+      <div class="muted" style="margin-bottom:10px">Find earlier moments whose player arrangement resembles the current one.</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span class="muted">Snapshots: <b id="sit-count">0</b></span>
+        <button class="btn primary" id="btn-similar">Find similar to now</button>
+      </div>
+      <div id="similar-results"></div>
+    </div>
+
+  </aside>
+</div>
+
+<script src="/static/js/tactical.js?v=14"></script>
+</body>
+</html>

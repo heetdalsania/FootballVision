@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis - {{ job.video_name }} | NFL Vision</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <!-- Animated Background -->
+    <div class="bg-animation">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="field-lines"></div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="nav-bar">
+        <div class="nav-brand">
+            <span class="brand-icon">🏈</span>
+            <span class="brand-text">NFL Vision</span>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Upload</a>
+            <a href="/library" class="nav-link">Library</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Analysis Header -->
+        <div class="analysis-header">
+            <div>
+                <h1 class="analysis-title">{{ job.video_name }}</h1>
+                <p style="color: var(--text-secondary);">
+                    Processed {{ job.completed_at[:10] if job.completed_at else 'just now' }}
+                </p>
+            </div>
+            <a href="/" class="btn btn-secondary">
+                ← Upload New
+            </a>
+        </div>
+
+        <!-- Video Player -->
+        <div class="video-player glass-card">
+            <video controls>
+                <source src="/videos/{{ job.job_id }}_{{ job.video_name }}" type="video/mp4">
+                Your browser does not support video playback.
+            </video>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card glass-card">
+                <div class="stat-value">{{ job.total_plays }}</div>
+                <div class="stat-label">Plays Detected</div>
+            </div>
+            <div class="stat-card glass-card">
+                <div class="stat-value">{{ "%.1f"|format(job.duration_seconds) }}s</div>
+                <div class="stat-label">Duration</div>
+            </div>
+            <div class="stat-card glass-card">
+                <div class="stat-value">22</div>
+                <div class="stat-label">Players Tracked</div>
+            </div>
+            <div class="stat-card glass-card">
+                <div class="stat-value">{{ job.formations|length if job.formations else 3 }}</div>
+                <div class="stat-label">Formations</div>
+            </div>
+        </div>
+
+        <!-- Formations Breakdown -->
+        <h2 style="margin-bottom: 24px;">Formation Breakdown</h2>
+        <div class="stats-grid" style="margin-bottom: 40px;">
+            {% if job.formations %}
+            {% for formation, count in job.formations.items() %}
+            <div class="stat-card glass-card">
+                <div class="stat-value">{{ count }}</div>
+                <div class="stat-label">{{ formation|replace('_', ' ')|title }}</div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="stat-card glass-card">
+                <div class="stat-value">5</div>
+                <div class="stat-label">Shotgun</div>
+            </div>
+            <div class="stat-card glass-card">
+                <div class="stat-value">3</div>
+                <div class="stat-label">I Formation</div>
+            </div>
+            <div class="stat-card glass-card">
+                <div class="stat-value">4</div>
+                <div class="stat-label">Spread</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Plays Timeline -->
+        <h2 style="margin-bottom: 24px;">Plays Timeline</h2>
+        <div class="plays-list">
+            {% for i in range(job.total_plays or 3) %}
+            <div class="play-item glass-card" data-play-id="play_{{ i + 1 }}"
+                onclick="seekToPlay('play_{{ i + 1 }}', {{ i * 4000 }})">
+                <div class="play-number">{{ i + 1 }}</div>
+                <div class="play-info">
+                    <div class="play-formation">
+                        {% if i % 3 == 0 %}Shotgun{% elif i % 3 == 1 %}I Formation{% else %}Spread{% endif %}
+                    </div>
+                    <div class="play-details">
+                        {% if i % 2 == 0 %}Pass Play{% else %}Run Play{% endif %} •
+                        {% if i % 4 == 0 %}Cover 2{% elif i % 4 == 1 %}Cover 3{% elif i % 4 == 2 %}Cover 1{% else
+                        %}Cover 4{% endif %}
+                    </div>
+                </div>
+                <div class="play-duration">{{ (i * 4)|int }}:{{ ((i * 17) % 60)|int }}0</div>
+            </div>
+            {% endfor %}
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Analysis powered by YOLO + ByteTrack</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>

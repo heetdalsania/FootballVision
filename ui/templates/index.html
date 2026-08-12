@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FootballVision</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-dark);
+    }
+
+    .hero-title {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      text-align: center;
+      line-height: 1.1;
+    }
+    .hero-title span { color: var(--primary); }
+    .hero-sub {
+      margin-top: 10px;
+      font-size: 1rem;
+      color: var(--text-muted);
+      text-align: center;
+      max-width: 480px;
+    }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-top: 48px;
+      width: 100%;
+      max-width: 680px;
+    }
+
+    .mode-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px 28px;
+      cursor: pointer;
+      transition: all 0.25s;
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .mode-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-lg);
+    }
+    .mode-card.coach { border-color: var(--primary); }
+    .mode-card.coach:hover { box-shadow: 0 16px 48px var(--primary-glow); }
+    .mode-card.fan   { border-color: var(--secondary); }
+    .mode-card.fan:hover   { box-shadow: 0 16px 48px var(--secondary-glow); }
+
+    .mode-icon { font-size: 2.2rem; }
+    .mode-name { font-size: 1.3rem; font-weight: 800; }
+    .mode-card.coach .mode-name { color: var(--primary); }
+    .mode-card.fan   .mode-name { color: var(--secondary); }
+    .mode-desc { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; }
+
+    .mode-features { list-style: none; margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .mode-features li { font-size: 0.75rem; color: var(--text-secondary); }
+    .mode-features li::before { content: "→ "; color: var(--text-muted); }
+
+    .demo-note {
+      margin-top: 28px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    .demo-note a { color: var(--accent); text-decoration: none; }
+    .demo-note a:hover { text-decoration: underline; }
+
+    @media (max-width: 540px) {
+      .mode-grid { grid-template-columns: 1fr; max-width: 340px; }
+    }
+  </style>
+</head>
+<body>
+
+  <div style="text-align:center;padding:0 20px">
+    <p style="font-size:0.75rem;color:var(--primary);letter-spacing:0.15em;text-transform:uppercase;font-weight:600;margin-bottom:10px">
+      ⚡ AI-Powered Real-Time Analysis
+    </p>
+    <h1 class="hero-title">Football<span>Vision</span></h1>
+    <p class="hero-sub">
+      Live formation detection, play prediction, and fan engagement —
+      powered by YOLOv8 and real-time ML.
+    </p>
+  </div>
+
+  <div class="mode-grid">
+
+    <!-- Coach Mode -->
+    <a href="/coach" class="mode-card coach">
+      <div class="mode-icon">🎯</div>
+      <div class="mode-name">Coach Mode</div>
+      <div class="mode-desc">Real-time tactical analysis for sideline use.</div>
+      <ul class="mode-features">
+        <li>Live annotated video feed</li>
+        <li>Formation detection + confidence</li>
+        <li>Run / Pass prediction</li>
+        <li>Blitz &amp; coverage alerts</li>
+        <li>Opponent tendency charts</li>
+        <li>Play-by-play log</li>
+      </ul>
+    </a>
+
+    <!-- Tactical View -->
+    <a href="/tactical" class="mode-card coach">
+      <div class="mode-icon">📐</div>
+      <div class="mode-name">Tactical View</div>
+      <div class="mode-desc">Top-down pitch analysis in real pitch coordinates.</div>
+      <ul class="mode-features">
+        <li>Broadcast → top-down 105×68 m pitch</li>
+        <li>Pixel → pitch homography calibration</li>
+        <li>Automatic team colouring</li>
+        <li>Live player positions in metres</li>
+        <li>Foundation for shape &amp; pressing metrics</li>
+      </ul>
+    </a>
+
+    <!-- Fan Mode -->
+    <a href="/fan" class="mode-card fan">
+      <div class="mode-icon">🏈</div>
+      <div class="mode-name">Fan Mode</div>
+      <div class="mode-desc">Interactive engagement for the ultimate viewing experience.</div>
+      <ul class="mode-features">
+        <li>Formation diagram viewer</li>
+        <li>Predict the Play — earn points</li>
+        <li>Live stats overlay</li>
+        <li>Formation frequency charts</li>
+        <li>Auto highlight clip gallery</li>
+      </ul>
+    </a>
+
+  </div>
+
+  <p class="demo-note">
+    No screen capture? Try <a href="/coach?demo">Coach Demo</a>,
+    <a href="/tactical?demo">Tactical Demo</a>, or <a href="/fan?demo">Fan Demo</a>
+    using the built-in synthetic field.
+  </p>
+
+</body>
+</html>

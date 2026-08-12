@@ -1,0 +1,26 @@
+# --- secrets: never commit ---
+.roboflow_key
+.env
+*.key
+
+# --- model weights (>100MB, GitHub rejects them) ---
+weights/
+*.pt
+
+# --- virtualenv / caches ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+
+# --- large media and runtime output ---
+clips/
+captures/
+uploads/
+data/*.mp4
+*.duckdb
+*.db
+
+# --- OS ---
+.DS_Store

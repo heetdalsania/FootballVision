@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library | NFL Vision</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <!-- Animated Background -->
+    <div class="bg-animation">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="field-lines"></div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="nav-bar">
+        <div class="nav-brand">
+            <span class="brand-icon">🏈</span>
+            <span class="brand-text">NFL Vision</span>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Upload</a>
+            <a href="/library" class="nav-link active">Library</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="analysis-header">
+            <h1 class="analysis-title">Video Library</h1>
+            <a href="/" class="btn btn-primary">
+                + Upload New
+            </a>
+        </div>
+
+        {% if jobs %}
+        <div class="library-grid">
+            {% for job in jobs %}
+            <a href="/analysis/{{ job.job_id }}" class="video-card glass-card">
+                <div class="video-thumbnail">
+                    🎬
+                </div>
+                <div class="video-meta">
+                    <div class="video-name">{{ job.video_name }}</div>
+                    <div class="video-stats">
+                        {{ job.total_plays }} plays • {{ "%.0f"|format(job.duration_seconds) }}s
+                    </div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="glass-card" style="padding: 60px; text-align: center;">
+            <div style="font-size: 64px; margin-bottom: 24px;">📭</div>
+            <h2 style="margin-bottom: 16px;">No Videos Yet</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 24px;">
+                Upload your first game film to get started
+            </p>
+            <a href="/" class="btn btn-primary">Upload Video</a>
+        </div>
+        {% endif %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Powered by YOLO + ByteTrack</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>

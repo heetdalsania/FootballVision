@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FootballVision — Fan Mode</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    body { background: var(--bg-dark); }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; height: 54px;
+      background: rgba(10,10,20,0.97);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar-brand { font-weight: 700; color: var(--secondary); font-size: 1rem; letter-spacing: 0.04em; }
+    .topbar-badge { font-size: 0.68rem; background: var(--secondary); color: #000; border-radius: 4px; padding: 2px 7px; margin-left: 8px; font-weight: 700; }
+    .btn-sm {
+      padding: 6px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); font-size: 0.8rem; cursor: pointer;
+      background: var(--bg-glass); color: var(--text-primary); transition: all 0.2s;
+    }
+    .btn-sm:hover { border-color: var(--secondary); color: var(--secondary); }
+    #live-dot { width: 8px; height: 8px; border-radius: 50%; background: #444; display: inline-block; }
+    #live-dot.live { background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    /* ── Main grid ── */
+    .fan-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      transition: border-color 0.3s;
+    }
+    .card.wide { grid-column: 1 / -1; }
+    .card-title {
+      font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px;
+    }
+
+    /* ── Formation diagram ── */
+    #formation-diagram-wrap {
+      position: relative;
+      width: 100%; padding-top: 56%;
+      background: rgba(0,180,100,0.07);
+      border: 1px solid rgba(0,180,100,0.2);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    #formation-canvas {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    }
+    .formation-label {
+      font-size: 1.5rem; font-weight: 800; color: var(--secondary);
+      margin-top: 12px; line-height: 1;
+    }
+    .formation-sublabel { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Live stats ── */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stat-box {
+      background: var(--bg-glass);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      text-align: center;
+    }
+    .stat-val { font-size: 1.8rem; font-weight: 800; color: var(--primary); }
+    .stat-lbl { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-top: 2px; }
+
+    /* Tendency bars */
+    .tend-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .tend-lbl { width: 44px; font-size: 0.75rem; color: var(--text-secondary); }
+    .tend-wrap { flex: 1; height: 8px; background: var(--bg-glass); border-radius: 4px; }
+    .tend-fill { height: 100%; border-radius: 4px; transition: width 0.6s; }
+    .tend-fill.run { background: var(--warning); }
+    .tend-fill.pass { background: var(--secondary); }
+    .tend-pct { width: 36px; text-align: right; font-size: 0.75rem; font-weight: 600; }
+
+    /* Formation frequency */
+    .freq-list { display: flex; flex-direction: column; gap: 6px; }
+    .freq-row { display: flex; align-items: center; gap: 8px; }
+    .freq-name { min-width: 110px; font-size: 0.74rem; color: var(--text-secondary); }
+    .freq-bar-wrap { flex: 1; height: 6px; background: var(--bg-glass); border-radius: 3px; }
+    .freq-bar { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.5s; }
+    .freq-pct { min-width: 36px; text-align: right; font-size: 0.72rem; color: var(--text-muted); }
+
+    /* ── Predict the Play ── */
+    .predict-card { border-color: var(--secondary); }
+    .predict-status {
+      font-size: 0.8rem; color: var(--text-muted);
+      text-align: center; padding: 8px 0;
+    }
+    .predict-countdown {
+      font-size: 3rem; font-weight: 900; color: var(--secondary);
+      text-align: center; line-height: 1;
+      display: none;
+    }
+    .predict-buttons { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; display: none; }
+    .predict-btn {
+      flex: 1; min-width: 80px; padding: 12px 8px;
+      border-radius: var(--radius-sm); border: 2px solid var(--border);
+      cursor: pointer; font-size: 0.85rem; font-weight: 700;
+      background: var(--bg-glass); color: var(--text-primary);
+      transition: all 0.2s; text-align: center;
+    }
+    .predict-btn:hover { transform: translateY(-2px); }
+    .predict-btn.run    { border-color: var(--warning); color: var(--warning); }
+    .predict-btn.pass   { border-color: var(--secondary); color: var(--secondary); }
+    .predict-btn.form   { border-color: var(--accent); color: var(--accent); font-size: 0.72rem; }
+    .predict-btn.selected { background: rgba(0,212,170,0.2); border-color: var(--secondary); }
+    .predict-result {
+      margin-top: 12px; padding: 10px; border-radius: var(--radius-sm);
+      text-align: center; font-weight: 700; display: none;
+    }
+    .predict-result.correct { background: rgba(0,212,170,0.15); color: var(--success); border: 1px solid var(--success); }
+    .predict-result.wrong   { background: rgba(255,71,87,0.1);  color: var(--error);   border: 1px solid var(--error); }
+
+    /* Score */
+    .score-display {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.8rem; color: var(--text-muted);
+    }
+    .score-val { font-size: 1.2rem; font-weight: 800; color: var(--secondary); }
+
+    /* ── Alerts ── */
+    .alert-item {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255,71,87,0.08);
+      border: 1px solid rgba(255,71,87,0.25);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px; font-size: 0.78rem;
+      color: #ff6b6b; margin-bottom: 6px;
+      animation: slideIn 0.3s;
+    }
+    @keyframes slideIn { from { opacity:0; transform:translateX(-8px); } to { opacity:1; } }
+
+    /* ── Highlight gallery ── */
+    .clip-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+    .clip-item {
+      background: var(--bg-glass);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .clip-item:hover { border-color: var(--primary); color: var(--primary); }
+    .no-clips { font-size: 0.75rem; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<header class="topbar">
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="topbar-brand">FootballVision</span>
+    <span class="topbar-badge">FAN</span>
+    <div id="live-dot"></div>
+    <span id="status-text" style="font-size:0.74rem;color:var(--text-muted)">Offline</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div class="score-display">
+      Score: <span class="score-val" id="player-score">0</span> pts
+    </div>
+    <button class="btn-sm" onclick="location.href='/'">← Home</button>
+  </div>
+</header>
+
+<!-- Main fan grid -->
+<div class="fan-grid">
+
+  <!-- Formation Viewer -->
+  <div class="card">
+    <div class="card-title">Formation Detected</div>
+    <div id="formation-diagram-wrap">
+      <canvas id="formation-canvas"></canvas>
+    </div>
+    <div class="formation-label" id="formation-label">—</div>
+    <div class="formation-sublabel" id="formation-sublabel">Waiting for signal…</div>
+  </div>
+
+  <!-- Predict the Play -->
+  <div class="card predict-card">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>Predict the Play</span>
+      <span id="predict-plays-correct" style="color:var(--secondary)"></span>
+    </div>
+    <div class="predict-status" id="predict-status">Waiting for next snap…</div>
+    <div class="predict-countdown" id="predict-countdown">5</div>
+    <div class="predict-buttons" id="predict-buttons">
+      <div class="predict-btn run" data-val="run" onclick="submitPrediction('run',this)">🏃 Run</div>
+      <div class="predict-btn pass" data-val="pass" onclick="submitPrediction('pass',this)">🏈 Pass</div>
+      <div class="predict-btn form" data-val="formation" onclick="submitPrediction('formation',this)">📐 Formation</div>
+    </div>
+    <div class="predict-result" id="predict-result"></div>
+  </div>
+
+  <!-- Live Stats -->
+  <div class="card">
+    <div class="card-title">Live Stats</div>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-val" id="stat-plays">0</div>
+        <div class="stat-lbl">Plays Tracked</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="stat-players" style="color:var(--secondary)">0</div>
+        <div class="stat-lbl">Players Visible</div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <div class="tend-row">
+        <span class="tend-lbl">Run</span>
+        <div class="tend-wrap"><div class="tend-fill run" id="stat-run-bar" style="width:50%"></div></div>
+        <span class="tend-pct" id="stat-run-pct">—</span>
+      </div>
+      <div class="tend-row">
+        <span class="tend-lbl">Pass</span>
+        <div class="tend-wrap"><div class="tend-fill pass" id="stat-pass-bar" style="width:50%"></div></div>
+        <span class="tend-pct" id="stat-pass-pct">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Formation Frequency -->
+  <div class="card">
+    <div class="card-title">Formation Frequency</div>
+    <div class="freq-list" id="freq-list">
+      <div style="font-size:0.75rem;color:var(--text-muted)">No data yet</div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="card">
+    <div class="card-title">What's Happening</div>
+    <div id="fan-alerts">
+      <div style="font-size:0.75rem;color:var(--text-muted)">No alerts</div>
+    </div>
+  </div>
+
+  <!-- Highlight Clips -->
+  <div class="card wide">
+    <div class="card-title">Highlight Clips</div>
+    <div class="clip-grid" id="clip-grid">
+      <div class="no-clips">No clips yet — highlights will appear automatically</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/js/fan.js"></script>
+</body>
+</html>
