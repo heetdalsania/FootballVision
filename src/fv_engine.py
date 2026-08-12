@@ -129,6 +129,9 @@ class FootballEngine:
         enable_team_classifier: bool = True,
         calibrate_every: int = 15,
         team_refresh_every: int = 90,
+        ball_every: int = 1,
+        ball_imgsz: int = 0,
+        half: bool = False,
     ):
         """
         Args:
@@ -138,12 +141,24 @@ class FootballEngine:
             team_refresh_every: frames after which a track's cached team is
                 re-checked. A player's team never changes, so running SigLIP on
                 every crop every frame was the single biggest cost (~600 ms/frame).
+            ball_every: frames between dedicated ball passes. The ball model is
+                a SECOND full inference over the frame, run whenever the primary
+                detector misses the ball — which is most frames, because the ball
+                is occluded, airborne or motion-blurred much of the time. Its cost
+                was previously untimed and invisible in the breakdown.
+            ball_imgsz: inference size for the ball pass. 0 reuses player_imgsz.
+                The ball is one small object; it does not need the same
+                resolution as twenty-two players.
+            half: run the detectors in fp16.
         """
         self.device = device
         self.player_imgsz = player_imgsz
         self.enable_team_classifier = enable_team_classifier
         self.calibrate_every = max(1, calibrate_every)
         self.team_refresh_every = max(1, team_refresh_every)
+        self.ball_every = max(1, ball_every)
+        self.ball_imgsz = int(ball_imgsz or 0)
+        self.half = bool(half)
 
         self._player_model = None
         self._pitch_model = None
@@ -234,15 +249,21 @@ class FootballEngine:
         # Dedicated ball pass. Detection is intermittent by nature (the ball is
         # occluded, airborne or motion-blurred much of the time), so the last
         # known position is held briefly rather than flickering to nothing.
-        if self._ball_model is not None and len(ball) == 0:
+        t_ball = time.time()
+        ball_due = (self.ball_every <= 1
+                    or self._frame_id % self.ball_every == 0)
+        if self._ball_model is not None and len(ball) == 0 and ball_due:
             try:
-                br = self._ball_model(frame, imgsz=self.player_imgsz, verbose=False)[0]
+                br = self._ball_model(
+                    frame, imgsz=self.ball_imgsz or self.player_imgsz, verbose=False
+                )[0]
                 bd = sv.Detections.from_ultralytics(br)
                 if len(bd):
                     keep = int(np.argmax(bd.confidence)) if bd.confidence is not None else 0
                     ball = bd[keep:keep + 1]
             except Exception as exc:
                 logger.debug("ball model failed: %s", exc)
+        timings["ball"] = (time.time() - t_ball) * 1000
 
         # ---- tracking (people only; the ball is not a player) -----------
         t0 = time.time()
