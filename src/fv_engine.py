@@ -86,6 +86,12 @@ class FrameResult:
     players: List[Dict] = field(default_factory=list)   # id, team, role, x, y (metres)
     ball: Optional[Dict] = None
     calibrated: bool = False
+    #: True only when a fresh homography was solved on THIS frame. `calibrated`
+    #: alone cannot tell you that: a failed solve keeps the previous transformer
+    #: (see `_pitch_transformer`), so `calibrated` stays True on frames that
+    #: were carried rather than solved. Reporting a calibration rate without
+    #: this split overstates what was measured.
+    homography_solved: bool = False
     n_keypoints: int = 0
     counts: Dict[str, int] = field(default_factory=dict)
     team_ready: bool = False
@@ -148,6 +154,7 @@ class FootballEngine:
 
         self._crops: List[np.ndarray] = []
         self._team_ready = False
+        self._solved_this_frame = False
         self._frame_id = 0
 
         # track_id -> (team_id, frame_it_was_classified)
@@ -269,6 +276,7 @@ class FootballEngine:
         timings["pitch"] = (time.time() - t0) * 1000
         res.n_keypoints = n_kp
         res.calibrated = transformer is not None
+        res.homography_solved = getattr(self, "_solved_this_frame", False)
 
         # ---- project to pitch coordinates ------------------------------
         if transformer is not None:
@@ -424,6 +432,7 @@ class FootballEngine:
         import supervision as sv
         from sports.common.view import ViewTransformer
 
+        self._solved_this_frame = False
         due = (self._frame_id % self.calibrate_every == 0
                or self._transformer is None)
         if not due:
@@ -456,6 +465,7 @@ class FootballEngine:
             self._n_keypoints = n
         except ValueError:
             return _keep()
+        self._solved_this_frame = True
         return self._transformer, self._n_keypoints
 
     # ------------------------------------------------------------------

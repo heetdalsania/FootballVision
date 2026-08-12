@@ -22,5 +22,8 @@ data/*.mp4
 *.duckdb
 *.db
 
+# --- benchmark artifacts ARE committed: they are the evidence ---
+!benchmarks/*.json
+
 # --- OS ---
 .DS_Store
