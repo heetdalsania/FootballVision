@@ -1,0 +1,26 @@
+{
+  "clip": "sample.mp4",
+  "frame_index": 30,
+  "conf": 0.3,
+  "imgsz": 1280,
+  "device": "mps",
+  "width": 1920,
+  "coco": {
+    "weights": "yolo11x.pt",
+    "total_detections": 33,
+    "by_class": {
+      "person": 31,
+      "sports ball": 1,
+      "tennis racket": 1
+    }
+  },
+  "football": {
+    "weights": "football-player-detection.pt",
+    "total_detections": 24,
+    "by_class": {
+      "player": 20,
+      "referee": 3,
+      "ball": 1
+    }
+  }
+}
