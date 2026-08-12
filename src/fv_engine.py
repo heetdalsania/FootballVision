@@ -125,12 +125,15 @@ class FootballEngine:
     def __init__(
         self,
         device: str = "mps",
-        player_imgsz: int = 1280,
+        # Defaults chosen by scripts/optimize_sweep.py on 2026-08-09, on the
+        # fastest configuration that holds player recall at 0.99 of the
+        # 1280px baseline. See benchmarks/optimize_sweep.json.
+        player_imgsz: int = 960,
         enable_team_classifier: bool = True,
         calibrate_every: int = 15,
         team_refresh_every: int = 90,
-        ball_every: int = 1,
-        ball_imgsz: int = 0,
+        ball_every: int = 5,
+        ball_imgsz: int = 640,
         half: bool = False,
     ):
         """

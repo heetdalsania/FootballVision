@@ -7,11 +7,12 @@ re-solving the homography on an interval". The 1,133 ms baseline is recorded
 (BRAIN, 2026-07-24, 60-frame run); the 249 ms figure is recorded nowhere. This
 script produces both numbers from the same binary on the same clip.
 
-Both optimisations are constructor parameters on FootballEngine, so the naive
-arm needs no old code:
+The optimisations are constructor parameters on FootballEngine, so the naive
+arm needs no old code. Three arms, every parameter pinned:
 
-    naive      calibrate_every=1   team_refresh_every=1
-    optimized  calibrate_every=15  team_refresh_every=90   (the defaults)
+    naive      everything on every frame, 1280px  - the historical baseline
+    cached     the two caching optimisations only - what the claim is about
+    optimized  current shipped defaults           - after the sweep
 
 Runs entirely offline on the local weights in weights/. No API key, no account.
 
@@ -33,9 +34,23 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+# Every parameter is pinned explicitly. If an arm only overrode the two
+# caching knobs it would silently inherit whatever the current defaults are,
+# so tuning the defaults would move the baseline and the ratio would be
+# measured against a moving target. The naive arm must stay the historical
+# configuration forever.
 ARMS = {
-    "naive": dict(calibrate_every=1, team_refresh_every=1),
-    "optimized": dict(calibrate_every=15, team_refresh_every=90),
+    # The configuration before any of the optimisations: every stage runs on
+    # every frame, at the original 1280px detection size.
+    "naive": dict(player_imgsz=1280, calibrate_every=1, team_refresh_every=1,
+                  ball_every=1, ball_imgsz=0),
+    # The caching optimisations only, at the original detection size. This is
+    # the arm the "cut latency by caching" claim is about.
+    "cached": dict(player_imgsz=1280, calibrate_every=15, team_refresh_every=90,
+                   ball_every=1, ball_imgsz=0),
+    # Current shipped defaults, chosen by scripts/optimize_sweep.py.
+    "optimized": dict(player_imgsz=960, calibrate_every=15, team_refresh_every=90,
+                      ball_every=5, ball_imgsz=640),
 }
 
 
@@ -103,8 +118,7 @@ def run_arm(arm: str, clip: str, frames: int, device: str, width: int) -> dict:
         "arm": arm,
         "clip": clip,
         "frames": analysed,
-        "calibrate_every": cfg["calibrate_every"],
-        "team_refresh_every": cfg["team_refresh_every"],
+        "config": cfg,
         "device": device,
         "width": width,
         "hardware": hardware(),
@@ -132,7 +146,7 @@ def main() -> int:
                     help="frames per arm (60 matches the recorded baseline run)")
     ap.add_argument("--device", default="mps", help="mps | cuda | cpu")
     ap.add_argument("--width", type=int, default=1920)
-    ap.add_argument("--arms", default="naive,optimized")
+    ap.add_argument("--arms", default="naive,cached,optimized")
     ap.add_argument("--out-dir", default="benchmarks")
     args = ap.parse_args()
 
@@ -162,10 +176,14 @@ def main() -> int:
               f"mean {r['mean_ms']:8.1f}   p95 {r['p95_ms']:8.1f}   "
               f"stages {r['median_stage_ms']}")
 
-    if "naive" in results and "optimized" in results:
-        a, b = results["naive"]["median_ms"], results["optimized"]["median_ms"]
-        ratio = a / b if b else float("inf")
-        print(f"\n  {a:.0f} ms -> {b:.0f} ms  =  {ratio:.2f}x reduction")
+    if "naive" in results:
+        base = results["naive"]["median_ms"]
+        print()
+        for arm in ("cached", "optimized"):
+            if arm in results:
+                v = results[arm]["median_ms"]
+                print(f"  naive -> {arm:10s} {base:.0f} ms -> {v:.0f} ms  "
+                      f"=  {base / v:.2f}x reduction")
         print("\n  The ratio is the durable claim; absolute ms are hardware-bound.")
         print("  If this differs from the resume, the resume changes to match.")
     return 0

@@ -1,0 +1,172 @@
+{
+  "baseline": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90
+    },
+    "frames": 40,
+    "median_ms": 322.6,
+    "mean_ms": 593.0,
+    "median_players": 23,
+    "mean_players": 22.7,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 77.8,
+      "detect": 168.4,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.8
+    }
+  },
+  "ball_every_5": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "ball_every": 5
+    },
+    "frames": 40,
+    "median_ms": 165.2,
+    "mean_ms": 307.1,
+    "median_players": 23,
+    "mean_players": 22.7,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 0.0,
+      "detect": 160.1,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.7
+    }
+  },
+  "ball_every_15": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "ball_every": 15
+    },
+    "frames": 40,
+    "median_ms": 164.6,
+    "mean_ms": 294.9,
+    "median_players": 23,
+    "mean_players": 22.7,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 0.0,
+      "detect": 159.9,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.7
+    }
+  },
+  "ball_imgsz_640": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "ball_imgsz": 640
+    },
+    "frames": 40,
+    "median_ms": 209.5,
+    "mean_ms": 311.7,
+    "median_players": 23,
+    "mean_players": 22.7,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 22.4,
+      "detect": 161.0,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.7
+    }
+  },
+  "ball_every_5+640": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "ball_every": 5,
+      "ball_imgsz": 640
+    },
+    "frames": 40,
+    "median_ms": 165.9,
+    "mean_ms": 302.5,
+    "median_players": 23,
+    "mean_players": 22.7,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 0.0,
+      "detect": 160.8,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.7
+    }
+  },
+  "player_imgsz_960": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "player_imgsz": 960
+    },
+    "frames": 40,
+    "median_ms": 184.5,
+    "mean_ms": 278.0,
+    "median_players": 23,
+    "mean_players": 22.5,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 88.3,
+      "detect": 101.1,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.8
+    }
+  },
+  "player_960+ball_5": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "player_imgsz": 960,
+      "ball_every": 5,
+      "ball_imgsz": 640
+    },
+    "frames": 40,
+    "median_ms": 98.3,
+    "mean_ms": 222.7,
+    "median_players": 23,
+    "mean_players": 22.5,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 0.0,
+      "detect": 93.2,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.8
+    }
+  },
+  "player_imgsz_640": {
+    "config": {
+      "calibrate_every": 15,
+      "team_refresh_every": 90,
+      "player_imgsz": 640
+    },
+    "frames": 40,
+    "median_ms": 97.0,
+    "mean_ms": 228.7,
+    "median_players": 22,
+    "mean_players": 21.3,
+    "frames_with_players": 37,
+    "calibrated_pct": 100.0,
+    "median_stage_ms": {
+      "ball": 43.8,
+      "detect": 47.0,
+      "pitch": 0.0,
+      "team": 0.0,
+      "track": 0.8
+    }
+  }
+}
