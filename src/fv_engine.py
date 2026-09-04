@@ -1,13 +1,12 @@
 """
 FootballVision Engine — real-time adaptation of roboflow/sports
 
-This is deliberately a thin adaptation of the reference implementation at
+This is deliberately an adaptation of the reference implementation at
 https://github.com/roboflow/sports (`examples/soccer/main.py`) rather than a
 reimplementation. It uses their weights, their `TeamClassifier`, their
-`ViewTransformer` and their `SoccerPitchConfiguration` unchanged, because that
-pipeline is proven; the value added here is making it run **live off a screen
-capture** instead of a pre-recorded file, and exposing the results as
-structured tactical data.
+`ViewTransformer` and `SoccerPitchConfiguration`, because that geometry is
+proven. Team assignment defaults to this project's instant local kit-colour
+classifier, with the reference SigLIP model available as an optional backend.
 
 Reference pipeline (per frame):
     player model  -> ball / goalkeeper / player / referee detections
@@ -26,6 +25,7 @@ reported with an unknown team rather than a guessed one.
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
 WEIGHTS_DIR = _ROOT / "weights"
+_CACHE_DIR = Path(os.environ.get("FOOTBALLVISION_CACHE_DIR", _ROOT / ".cache"))
+try:
+    (_CACHE_DIR / "matplotlib").mkdir(parents=True, exist_ok=True)
+    (_CACHE_DIR / "ultralytics").mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(_CACHE_DIR / "matplotlib"))
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(_CACHE_DIR / "ultralytics"))
+except OSError:
+    # A read-only deployment can still use each library's platform default.
+    logger.debug("Could not create local library cache", exc_info=True)
 
 PLAYER_MODEL = WEIGHTS_DIR / "football-player-detection.pt"
 PITCH_MODEL = WEIGHTS_DIR / "football-pitch-detection.pt"
@@ -76,6 +85,25 @@ KEYPOINT_CONFIDENCE = 0.5
 
 # Crops to accumulate before fitting the team classifier.
 TEAM_FIT_CROPS = 120
+LOCAL_TEAM_FIT_CROPS = 48
+POSITION_SMOOTHING_ALPHA = 0.38
+BALL_SMOOTHING_ALPHA = 0.48
+BALL_HOLD_FRAMES = 12
+
+
+def smooth_point(
+    previous: Optional[Tuple[float, float]],
+    current: Tuple[float, float],
+    alpha: float,
+) -> Tuple[float, float]:
+    """Exponential smoothing for projected pitch positions."""
+    if previous is None:
+        return float(current[0]), float(current[1])
+    alpha = min(1.0, max(0.0, float(alpha)))
+    return (
+        alpha * float(current[0]) + (1.0 - alpha) * float(previous[0]),
+        alpha * float(current[1]) + (1.0 - alpha) * float(previous[1]),
+    )
 
 
 @dataclass
@@ -95,6 +123,7 @@ class FrameResult:
     n_keypoints: int = 0
     counts: Dict[str, int] = field(default_factory=dict)
     team_ready: bool = False
+    team_status: str = "learning"
     timings_ms: Dict[str, float] = field(default_factory=dict)
     #: Why nothing was found, when nothing was found. Without this the app
     #: silently reports an empty pitch whether the captured window shows a
@@ -135,6 +164,7 @@ class FootballEngine:
         ball_every: int = 5,
         ball_imgsz: int = 640,
         half: bool = False,
+        team_backend: Optional[str] = None,
     ):
         """
         Args:
@@ -162,6 +192,11 @@ class FootballEngine:
         self.ball_every = max(1, ball_every)
         self.ball_imgsz = int(ball_imgsz or 0)
         self.half = bool(half)
+        self.team_backend = (team_backend or os.environ.get(
+            "FOOTBALLVISION_TEAM_BACKEND", "local"
+        )).strip().lower()
+        if self.team_backend not in {"local", "siglip"}:
+            raise ValueError("team_backend must be 'local' or 'siglip'")
 
         self._player_model = None
         self._pitch_model = None
@@ -182,6 +217,9 @@ class FootballEngine:
         self._role_votes: Dict[int, Dict[int, float]] = {}
         # tracker_id -> recent pitch x in metres, for the goalkeeper tie-break.
         self._track_x: Dict[int, deque] = {}
+        self._smoothed_positions: Dict[int, Tuple[float, float]] = {}
+        self._last_ball: Optional[Tuple[float, float]] = None
+        self._last_ball_frame: int = 0
         # Homography reused between calibration frames.
         self._transformer = None
         self._n_keypoints = 0
@@ -190,6 +228,7 @@ class FootballEngine:
     def load(self) -> None:
         """Load models. Blocking — call once, off the event loop."""
         import supervision as sv
+        import torch
         from ultralytics import YOLO
         from sports.configs.soccer import SoccerPitchConfiguration
 
@@ -199,6 +238,13 @@ class FootballEngine:
                 f"Missing weights {missing} in {WEIGHTS_DIR}. "
                 "Run scripts/download_weights.sh"
             )
+
+        if self.device == "mps" and not torch.backends.mps.is_available():
+            logger.warning("MPS is unavailable; falling back to CPU inference")
+            self.device = "cpu"
+        elif self.device.startswith("cuda") and not torch.cuda.is_available():
+            logger.warning("CUDA is unavailable; falling back to CPU inference")
+            self.device = "cpu"
 
         logger.info("Loading football models on %s", self.device)
         self._player_model = YOLO(str(PLAYER_MODEL)).to(device=self.device)
@@ -211,7 +257,40 @@ class FootballEngine:
         # Same tracker settings as the reference implementation.
         self._tracker = sv.ByteTrack(minimum_consecutive_frames=3)
         self._pitch_config = SoccerPitchConfiguration()
+        if self.enable_team_classifier and self.team_backend == "siglip":
+            # Load the public embedding model during the visible startup phase,
+            # never in the middle of live analysis. It can be cached ahead of
+            # time without a login or token.
+            try:
+                from sports.common.team import TeamClassifier
+                logger.info("Loading optional SigLIP team model")
+                self._team_classifier = TeamClassifier(device=self.device)
+            except Exception as exc:
+                logger.warning("SigLIP unavailable; using local kit colours: %s", exc)
+                self.team_backend = "local"
+                self._team_classifier = None
+        self.reset_session()
         logger.info("Football models ready")
+
+    def reset_session(self) -> None:
+        """Clear match-specific temporal state while retaining ML weights."""
+        import supervision as sv
+
+        self._tracker = sv.ByteTrack(minimum_consecutive_frames=3)
+        self._crops = []
+        self._team_ready = False
+        self._solved_this_frame = False
+        self._frame_id = 0
+        self._team_cache = {}
+        self._role_votes = {}
+        self._track_x = {}
+        self._smoothed_positions = {}
+        self._last_ball = None
+        self._last_ball_frame = 0
+        self._transformer = None
+        self._n_keypoints = 0
+        if self.team_backend == "local":
+            self._team_classifier = None
 
     # ------------------------------------------------------------------
     def process(self, frame: np.ndarray, annotate: bool = True) -> FrameResult:
@@ -293,6 +372,11 @@ class FootballEngine:
         team_ids = self._resolve_teams(frame, players)
         timings["team"] = (time.time() - t0) * 1000
         res.team_ready = self._team_ready
+        res.team_status = (
+            f"ready-{self.team_backend}" if self._team_ready
+            else f"learning-{self.team_backend}" if self.enable_team_classifier
+            else "unavailable"
+        )
 
         # ---- pitch calibration -----------------------------------------
         t0 = time.time()
@@ -311,10 +395,24 @@ class FootballEngine:
                 bxy = ball.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
                 pt = transformer.transform_points(bxy[:1].astype(np.float32))
                 if len(pt):
+                    raw = (float(pt[0][0]) / 100.0, float(pt[0][1]) / 100.0)
+                    self._last_ball = smooth_point(
+                        self._last_ball, raw, BALL_SMOOTHING_ALPHA
+                    )
+                    self._last_ball_frame = self._frame_id
                     res.ball = {
-                        "x": round(float(pt[0][0]) / 100.0, 2),
-                        "y": round(float(pt[0][1]) / 100.0, 2),
+                        "x": round(self._last_ball[0], 2),
+                        "y": round(self._last_ball[1], 2),
+                        "stale": False,
                     }
+            if (res.ball is None and self._last_ball is not None
+                    and self._frame_id - self._last_ball_frame <= BALL_HOLD_FRAMES):
+                res.ball = {
+                    "x": round(self._last_ball[0], 2),
+                    "y": round(self._last_ball[1], 2),
+                    "stale": True,
+                    "age_frames": self._frame_id - self._last_ball_frame,
+                }
 
         if annotate:
             res.annotated = self._annotate(
@@ -382,12 +480,18 @@ class FootballEngine:
         if not self._team_ready:
             # Accumulate crops from the opening frames, then fit once.
             self._crops.extend(crops)
-            if len(self._crops) >= TEAM_FIT_CROPS:
+            fit_crops = (LOCAL_TEAM_FIT_CROPS if self.team_backend == "local"
+                         else TEAM_FIT_CROPS)
+            if len(self._crops) >= fit_crops:
                 try:
-                    from sports.common.team import TeamClassifier
                     logger.info("Fitting team classifier on %d crops",
                                 len(self._crops))
-                    tc = TeamClassifier(device=self.device)
+                    if self.team_backend == "local":
+                        from src.team_assignment import CropTeamClassifier
+                        tc = CropTeamClassifier()
+                    else:
+                        from sports.common.team import TeamClassifier
+                        tc = self._team_classifier or TeamClassifier(device=self.device)
                     tc.fit(self._crops)
                     self._team_classifier = tc
                     self._team_ready = True
@@ -401,8 +505,8 @@ class FootballEngine:
 
         # A player does not change team mid-match, so a track only needs
         # classifying once. Only crops without a fresh cached answer are sent
-        # through SigLIP — this is what turns a ~600 ms/frame cost into a
-        # near-zero one on frames where every player is already known.
+        # through the classifier — this makes cost near-zero on frames where
+        # every player is already known.
         track_ids = (players.tracker_id if players.tracker_id is not None
                      else np.full(len(players), -1))
         teams = np.full(len(players), -1, dtype=int)
@@ -510,6 +614,14 @@ class FootballEngine:
                        if dets.tracker_id is not None else -1)
                 team = int(teams[i]) if teams is not None and i < len(teams) else -1
                 x_m = float(pitch_xy[i][0]) / 100.0
+                y_m = float(pitch_xy[i][1]) / 100.0
+                if tid >= 0:
+                    x_m, y_m = smooth_point(
+                        self._smoothed_positions.get(tid),
+                        (x_m, y_m),
+                        POSITION_SMOOTHING_ALPHA,
+                    )
+                    self._smoothed_positions[tid] = (x_m, y_m)
                 # Feed the goalkeeper tie-break. Only outfield-capable roles
                 # matter here: a referee is never promoted to goalkeeper.
                 if tid >= 0 and role in ("player", "goalkeeper"):
@@ -520,12 +632,32 @@ class FootballEngine:
                     "team": team,
                     # config vertices are centimetres; report metres
                     "x": round(x_m, 2),
-                    "y": round(float(pitch_xy[i][1]) / 100.0, 2),
+                    "y": round(y_m, 2),
                 })
 
         add(players, "player", team_ids)
         add(goalkeepers, "goalkeeper")
         add(referees, "referee")
+
+        # A goalkeeper wears a third colour, so kit clustering cannot assign
+        # it directly. Associate it with the nearest outfield-team centroid.
+        team_points = {
+            team: np.asarray([[p["x"], p["y"]] for p in out
+                              if p["role"] == "player" and p["team"] == team])
+            for team in (0, 1)
+        }
+        centroids = {team: pts.mean(axis=0) for team, pts in team_points.items() if len(pts)}
+        if len(centroids) == 2:
+            for person in out:
+                if person["role"] == "goalkeeper":
+                    xy = np.asarray([person["x"], person["y"]])
+                    person["team"] = min(centroids, key=lambda t: np.linalg.norm(xy - centroids[t]))
+
+        if len(self._smoothed_positions) > 500:
+            live = {p["id"] for p in out if p["id"] >= 0}
+            self._smoothed_positions = {
+                tid: xy for tid, xy in self._smoothed_positions.items() if tid in live
+            }
         return out
 
     # ------------------------------------------------------------------

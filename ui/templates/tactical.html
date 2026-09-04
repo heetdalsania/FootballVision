@@ -123,6 +123,12 @@
   .sim-row { display: flex; gap: 10px; align-items: center; background: #0f1219; border-radius: 8px; padding: 7px; margin-bottom: 7px; }
   .sim-pitch { border-radius: 4px; flex: none; }
   .sim-pct { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .history-row { background:#0f1219; border-radius:8px; padding:9px; margin-bottom:7px; }
+  .history-head { display:flex; align-items:center; gap:7px; }
+  .history-name { min-width:0; flex:1; font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .history-actions { display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
+  .history-actions .btn { padding:4px 8px; font-size:11px; }
+  .download-links a { color:var(--accent); font-size:11px; margin-right:9px; }
   .ask-in { display:flex; gap:7px; margin-bottom:9px; }
   .ask-in input {
     flex:1; min-width:0; padding:8px 10px; border-radius:7px; font-size:12.5px;
@@ -211,7 +217,10 @@
     <div id="source-grid"></div>
     <div id="source-state" class="modal-state" style="display:none"></div>
     <div class="modal-foot">
-      <span class="muted">Analysis runs at roughly 4 frames per second.</span>
+      <div>
+        <input type="file" id="video-upload" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,video/x-msvideo" hidden />
+        <button class="btn" id="btn-upload" type="button">Upload a video</button>
+      </div>
       <button class="link" id="modal-cancel">Cancel</button>
     </div>
   </div>
@@ -268,7 +277,7 @@
       <div class="trow"><span class="swatch" style="background:var(--teamA)"></span> Team A <span class="n" id="count-a">0</span></div>
       <div class="trow"><span class="swatch" style="background:var(--teamB)"></span> Team B <span class="n" id="count-b">0</span></div>
       <div class="trow" id="row-unassigned" style="display:none"><span class="swatch" style="background:#9aa0a6"></span> Unassigned <span class="n" id="count-u">0</span></div>
-      <div class="pending" id="team-pending">Learning kit colours from the opening frames…</div>
+      <div class="pending" id="team-pending" style="display:none">Learning kit colours from the opening frames…</div>
     </div>
 
     <div class="card">
@@ -324,9 +333,15 @@
       <div id="similar-results"></div>
     </div>
 
+    <div class="card">
+      <div class="card-t">Match history</div>
+      <div class="muted" style="margin-bottom:10px">Saved locally on this computer. Reopen any sampled pitch state or export a report and raw CSV data.</div>
+      <div id="history-list"><div class="muted">No completed sessions yet.</div></div>
+    </div>
+
   </aside>
 </div>
 
-<script src="/static/js/tactical.js?v=14"></script>
+<script src="/static/js/tactical.js?v=17"></script>
 </body>
 </html>

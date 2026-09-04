@@ -1,0 +1,44 @@
+{
+  "metrics": {
+    "video": "data/sample.mp4",
+    "frames": 12,
+    "stride": 1,
+    "width": 960,
+    "device": "cpu",
+    "football_rate": 1.0,
+    "calibrated_rate": 1.0,
+    "median_people": 22.0,
+    "projection_rate": 1.0,
+    "resolved_team_rate": 0.6512,
+    "team_flip_rate": 0.0,
+    "mean_latency_ms": 1143.1,
+    "p95_latency_ms": 2447.9,
+    "throughput_fps": 0.872
+  },
+  "thresholds": {
+    "football_rate": {
+      "min": 0.95
+    },
+    "calibrated_rate": {
+      "min": 0.8
+    },
+    "median_people": {
+      "min": 10,
+      "max": 35
+    },
+    "projection_rate": {
+      "min": 0.7
+    },
+    "resolved_team_rate": {
+      "min": 0.25
+    },
+    "team_flip_rate": {
+      "max": 0.05
+    },
+    "p95_latency_ms": {
+      "max": 5000
+    }
+  },
+  "passed": true,
+  "failures": []
+}

@@ -18,13 +18,16 @@ Routes:
 import json
 import logging
 import os
+import re
 import sys
 import time
+import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, File, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
@@ -35,7 +38,19 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.pipeline import AnalysisPipeline, PipelineConfig
-from db.session import init_db, save_game, save_play, save_prediction
+from db.session import (
+    create_tactical_session,
+    finish_tactical_session,
+    get_tactical_session,
+    get_tactical_snapshots,
+    init_db,
+    list_tactical_sessions,
+    save_game,
+    save_play,
+    save_prediction,
+    save_tactical_snapshot,
+    set_tactical_artifacts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +58,34 @@ logger = logging.getLogger(__name__)
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="FootballVision", version="2.0.0")
+
+async def _shutdown_pipelines():
+    if _pipeline.is_running:
+        await _pipeline.stop()
+    if _tac.is_running:
+        await _tac.stop()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await init_db()
+    logger.info("FootballVision API ready.")
+    try:
+        yield
+    finally:
+        await _shutdown_pipelines()
+
+
+app = FastAPI(title="FootballVision", version="2.0.0", lifespan=lifespan)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 CLIPS_DIR = ROOT / "clips"
 CLIPS_DIR.mkdir(exist_ok=True)
+TACTICAL_VIDEO_DIRS = (ROOT / "data", ROOT / "uploads")
+TACTICAL_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+TACTICAL_UPLOAD_LIMIT = 5 * 1024 * 1024 * 1024
+ANALYSIS_DIR = ROOT / "analysis"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -62,20 +99,7 @@ from src.tactical_pipeline import TacticalPipeline, TacticalConfig
 _tac: TacticalPipeline = TacticalPipeline()
 _game_id: int = 0
 _session_start: float = 0.0
-
-# ---------------------------------------------------------------------------
-# Startup / shutdown
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup():
-    await init_db()
-    logger.info("FootballVision API ready.")
-
-@app.on_event("shutdown")
-async def shutdown():
-    if _pipeline.is_running:
-        await _pipeline.stop()
+_tactical_session_id: int = 0
 
 # ---------------------------------------------------------------------------
 # Page routes
@@ -84,30 +108,39 @@ async def shutdown():
 @app.get("/")
 async def index():
     """
-    Send the root straight to the tactical view.
+    Send the root to the tactical view, or to the synthetic legacy demo when
+    the server was explicitly started with ``main.py --demo``.
 
     Coach/Fan were the original NFL-era modes; the football-analysis product
     is the tactical view, so there is one entry point rather than a menu.
     """
     from fastapi.responses import RedirectResponse
+    if os.environ.get("FOOTBALLVISION_DEMO") == "1":
+        return RedirectResponse(url="/coach?demo")
     return RedirectResponse(url="/tactical")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Avoid a noisy browser 404 until a branded icon is added."""
+    return Response(status_code=204)
 
 @app.get("/modes", response_class=HTMLResponse)
 async def modes(request: Request):
     """The original mode selector, kept for the Coach/Fan views."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/coach", response_class=HTMLResponse)
 async def coach_page(request: Request):
-    return templates.TemplateResponse("coach.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="coach.html")
 
 @app.get("/fan", response_class=HTMLResponse)
 async def fan_page(request: Request):
-    return templates.TemplateResponse("fan.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="fan.html")
 
 @app.get("/tactical", response_class=HTMLResponse)
 async def tactical_page(request: Request):
-    return templates.TemplateResponse("tactical.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="tactical.html")
 
 # ---------------------------------------------------------------------------
 # Session control
@@ -315,24 +348,92 @@ class TacticalStartRequest(BaseModel):
     window_id: Optional[int] = None
     target_fps: int = 6
 
+
+def _resolve_tactical_video(video_path: str) -> Path:
+    """Resolve a user-selected video without allowing arbitrary file access."""
+    candidate = Path(video_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        raise ValueError("The selected video no longer exists")
+
+    if not resolved.is_file() or resolved.suffix.lower() not in TACTICAL_VIDEO_EXTENSIONS:
+        raise ValueError("The selected source is not a supported video file")
+
+    for folder in TACTICAL_VIDEO_DIRS:
+        try:
+            resolved.relative_to(folder.resolve())
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError("Videos must be selected from the data/ or uploads/ folder")
+
 @app.post("/tactical/start")
 async def tactical_start(body: TacticalStartRequest):
-    global _tac
+    global _tactical_session_id
+    selected_sources = sum(value is not None for value in (
+        body.video_path, body.display_index, body.window_id
+    ))
+    if selected_sources > 1:
+        return JSONResponse(
+            {"ok": False, "error": "Select exactly one video, window, or display"},
+            status_code=400,
+        )
+
+    video_path = None
+    if body.video_path is not None:
+        try:
+            video_path = str(_resolve_tactical_video(body.video_path))
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
     if _tac.is_running:
         await _tac.stop()
     cfg = TacticalConfig(
-        video_path=body.video_path,
+        video_path=video_path,
         display_index=body.display_index,
         window_id=body.window_id,
         target_fps=max(1, min(body.target_fps, 15)),
     )
-    _tac = TacticalPipeline(cfg)
+    # Keep the pipeline instance so its loaded ML engine can be reused when a
+    # user stops and starts another source. Reloading all three models made a
+    # routine source change look like the app had hung.
+    _tac.config = cfg
+    if video_path:
+        source_type = "video"
+        source_name = Path(video_path).name
+        stored_path = str(Path(video_path).resolve().relative_to(ROOT))
+    elif body.window_id is not None:
+        source_type, source_name, stored_path = "window", f"Window {body.window_id}", None
+    else:
+        index = body.display_index if body.display_index is not None else 0
+        source_type, source_name, stored_path = "display", f"Display {index}", None
+
+    session_id = await create_tactical_session(source_name, source_type, stored_path)
+    _tactical_session_id = session_id
+
+    async def persist(payload, sid=session_id):
+        await save_tactical_snapshot(sid, payload)
+
+    async def finalise(frames, elapsed_s, error, sid=session_id):
+        await finish_tactical_session(sid, frames, elapsed_s, error)
+
+    _tac.snapshot_sink = persist
+    _tac.stopped_sink = finalise
     result = await _tac.start()
+    result["session_id"] = session_id
+    if not result.get("ok"):
+        await finish_tactical_session(session_id, 0, 0, result.get("error"))
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 @app.post("/tactical/stop")
 async def tactical_stop():
-    return JSONResponse(await _tac.stop())
+    result = await _tac.stop()
+    result["session_id"] = _tactical_session_id
+    return JSONResponse(result)
 
 @app.get("/tactical/stats")
 async def tactical_stats():
@@ -345,19 +446,150 @@ async def tactical_similar(k: int = 4):
 @app.get("/tactical/videos")
 async def tactical_videos():
     """Video files available to analyse, from data/ and uploads/."""
-    exts = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
     out = []
-    for folder in (ROOT / "data", ROOT / "uploads"):
+    for folder in TACTICAL_VIDEO_DIRS:
         if not folder.exists():
             continue
         for f in sorted(folder.iterdir()):
-            if f.suffix.lower() in exts:
+            if f.suffix.lower() in TACTICAL_VIDEO_EXTENSIONS:
+                try:
+                    resolved = _resolve_tactical_video(str(f))
+                except ValueError:
+                    continue
                 out.append({
-                    "path": str(f),
+                    # A project-relative identifier avoids exposing the local
+                    # account path in the browser and survives moving the repo.
+                    "path": str(resolved.relative_to(ROOT)),
                     "name": f.name,
                     "size_mb": round(f.stat().st_size / 1e6, 1),
                 })
     return JSONResponse({"videos": out})
+
+
+@app.post("/tactical/upload")
+async def tactical_upload(video: UploadFile = File(...)):
+    """Save a local match upload into the only directory analysis may read."""
+    original = Path(video.filename or "match.mp4").name
+    suffix = Path(original).suffix.lower()
+    if suffix not in TACTICAL_VIDEO_EXTENSIONS:
+        await video.close()
+        return JSONResponse(
+            {"ok": False, "error": "Use MP4, MOV, MKV, AVI, or WebM video"},
+            status_code=400,
+        )
+
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(original).stem).strip("-.")
+    safe_stem = safe_stem[:80] or "match"
+    upload_dir = ROOT / "uploads"
+    upload_dir.mkdir(exist_ok=True)
+    target = upload_dir / f"{safe_stem}{suffix}"
+    if target.exists():
+        target = upload_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{suffix}"
+    partial = target.with_suffix(target.suffix + ".part")
+
+    size = 0
+    try:
+        with partial.open("wb") as dst:
+            while chunk := await video.read(1024 * 1024):
+                size += len(chunk)
+                if size > TACTICAL_UPLOAD_LIMIT:
+                    raise ValueError("Video exceeds the 5 GB upload limit")
+                dst.write(chunk)
+        partial.replace(target)
+    except ValueError as exc:
+        partial.unlink(missing_ok=True)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=413)
+    except OSError as exc:
+        partial.unlink(missing_ok=True)
+        logger.exception("Upload failed")
+        return JSONResponse({"ok": False, "error": f"Could not save upload: {exc}"}, status_code=500)
+    finally:
+        await video.close()
+
+    return JSONResponse({
+        "ok": True,
+        "video": {
+            "path": str(target.relative_to(ROOT)),
+            "name": target.name,
+            "size_mb": round(size / 1e6, 1),
+        },
+    })
+
+
+@app.get("/tactical/sessions")
+async def tactical_sessions(limit: int = 30):
+    return JSONResponse({"sessions": await list_tactical_sessions(limit)})
+
+
+@app.get("/tactical/sessions/{session_id}")
+async def tactical_session_detail(session_id: int):
+    session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    snapshots = await get_tactical_snapshots(session_id)
+    return JSONResponse({"session": session, "snapshots": snapshots})
+
+
+@app.post("/tactical/sessions/{session_id}/artifacts")
+async def tactical_build_artifacts(session_id: int):
+    session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    snapshots = await get_tactical_snapshots(session_id)
+    from src.session_report import build_session_artifacts
+    import asyncio
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            build_session_artifacts,
+            snapshots,
+            ANALYSIS_DIR,
+            session_id,
+            session["source_name"],
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+    def rel(path):
+        return str(Path(path).resolve().relative_to(ROOT)) if path else None
+
+    await set_tactical_artifacts(
+        session_id,
+        report_path=rel(result["report"]),
+        tracking_path=rel(result["tracking"]),
+        metrics_path=rel(result["metrics"]),
+    )
+    downloads = {
+        kind: f"/tactical/sessions/{session_id}/download/{kind}"
+        for kind in ("tracking", "metrics")
+    }
+    if result["report"]:
+        downloads["report"] = f"/tactical/sessions/{session_id}/download/report"
+    return JSONResponse({
+        "ok": True,
+        "report_available": bool(result["report"]),
+        "tracking_rows": result["tracking_rows"],
+        "metric_rows": result["metric_rows"],
+        "downloads": downloads,
+    })
+
+
+@app.get("/tactical/sessions/{session_id}/download/{kind}")
+async def tactical_download(session_id: int, kind: str):
+    if kind not in {"report", "tracking", "metrics"}:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    session = await get_tactical_session(session_id)
+    if not session or not session.get(f"{kind}_path"):
+        raise HTTPException(status_code=404, detail="Build the report first")
+    path = (ROOT / session[f"{kind}_path"]).resolve()
+    try:
+        path.relative_to(ANALYSIS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file is missing")
+    media = "image/png" if kind == "report" else "text/csv"
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 class AskRequest(BaseModel):

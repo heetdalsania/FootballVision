@@ -25,8 +25,9 @@ import base64
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 import numpy as np
 
@@ -60,6 +61,13 @@ class TacticalPipeline:
         self._clients: Set[Any] = set()
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        # One worker serializes model loading and inference across stop/start.
+        # Cancelling an asyncio future cannot stop Python code already running
+        # in a thread; a shared pool prevents a quick restart from using the
+        # same model concurrently with that finishing frame.
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="footballvision-tactical"
+        )
 
         self._engine = None
         self._source = None
@@ -73,6 +81,12 @@ class TacticalPipeline:
         self._last_players: List[Dict] = []
         self._last_error: Optional[str] = None
         self._fps_ema: float = 0.0
+        # Optional async hooks let the web layer persist sessions without
+        # coupling this reusable vision loop to SQLite or FastAPI.
+        self.snapshot_sink: Optional[Callable[[Dict], Awaitable[None]]] = None
+        self.stopped_sink: Optional[
+            Callable[[int, float, Optional[str]], Awaitable[None]]
+        ] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -81,9 +95,14 @@ class TacticalPipeline:
         if self._running:
             return {"ok": False, "error": "Session already running"}
 
+        self._last_error = None
+        self._capture_error = None
+        self._last_payload = {}
+        self._last_players = []
+        self._fps_ema = 0.0
         loop = asyncio.get_event_loop()
         try:
-            await loop.run_in_executor(None, self._load)
+            await loop.run_in_executor(self._executor, self._load)
         except Exception as exc:
             logger.exception("Failed to start")
             return {"ok": False, "error": str(exc)}
@@ -103,12 +122,7 @@ class TacticalPipeline:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        if self._source is not None:
-            try:
-                self._source.release()
-            except Exception:
-                pass
-            self._source = None
+        self._close_source()
         return {"ok": True, "frames": self.frame_id}
 
     @property
@@ -121,16 +135,36 @@ class TacticalPipeline:
         from src.fv_engine import FootballEngine
         from src.state_embedding import StateEmbedder, SituationStore
 
-        if self._engine is None:
-            self._engine = FootballEngine(
-                device=self.config.device,
-                player_imgsz=self.config.analysis_width,
-            )
-            self._engine.load()
-
-        self._embedder = StateEmbedder()
-        self._situations = SituationStore(dim=self._embedder.dim)
+        # Validate/open the source before paying the model-load cost. This also
+        # surfaces a missing file or screen permission error immediately.
         self._open_source()
+        try:
+            if self._engine is None:
+                self._engine = FootballEngine(
+                    device=self.config.device,
+                    player_imgsz=self.config.analysis_width,
+                )
+                self._engine.load()
+            else:
+                # Keep heavyweight model weights, but never carry tracker ids,
+                # homography, kit centroids, or ball position into a new match.
+                self._engine.reset_session()
+
+            self._embedder = StateEmbedder()
+            self._situations = SituationStore(dim=self._embedder.dim)
+        except Exception:
+            self._close_source()
+            raise
+
+    def _close_source(self) -> None:
+        if self._source is None:
+            return
+        try:
+            self._source.release()
+        except Exception:
+            logger.debug("Source release failed", exc_info=True)
+        finally:
+            self._source = None
 
     def _open_source(self) -> None:
         cfg = self.config
@@ -219,38 +253,67 @@ class TacticalPipeline:
         interval = 1.0 / max(1, self.config.target_fps)
         last_send = 0.0
 
-        while self._running:
-            t0 = time.monotonic()
+        try:
+            while self._running:
+                t0 = time.monotonic()
 
-            frame = await loop.run_in_executor(None, self._read_frame)
-            if frame is None:
-                await asyncio.sleep(0.05)
-                continue
+                frame = await loop.run_in_executor(self._executor, self._read_frame)
+                if frame is None:
+                    await asyncio.sleep(0.05)
+                    continue
 
-            # Resize once for analysis; the engine's imgsz handles the rest.
-            if frame.shape[1] != self.config.analysis_width:
-                h = int(frame.shape[0] * self.config.analysis_width / frame.shape[1])
-                frame = cv2.resize(frame, (self.config.analysis_width, h))
+                # Resize once for analysis; the engine's imgsz handles the rest.
+                if frame.shape[1] != self.config.analysis_width:
+                    h = int(frame.shape[0] * self.config.analysis_width / frame.shape[1])
+                    frame = cv2.resize(frame, (self.config.analysis_width, h))
 
-            self.frame_id += 1
-            result = await loop.run_in_executor(None, self._analyze, frame)
+                self.frame_id += 1
+                result = await loop.run_in_executor(self._executor, self._analyze, frame)
 
-            now = time.monotonic()
-            dt = now - t0
-            self._fps_ema = (0.8 * self._fps_ema + 0.2 * (1.0 / dt)) if dt > 0 else self._fps_ema
+                now = time.monotonic()
+                dt = now - t0
+                self._fps_ema = (0.8 * self._fps_ema + 0.2 * (1.0 / dt)) if dt > 0 else self._fps_ema
 
-            # Build the payload on the interval whether or not anyone is
-            # listening: /tactical/ask and /tactical/stats read the latest
-            # state, so gating this on connected clients meant the ask
-            # endpoint saw nothing unless a browser happened to be open.
-            if now - last_send >= interval:
-                payload = self._build_payload(result)
-                self._last_payload = payload
-                if self._clients:
-                    await self._broadcast(payload)
-                last_send = now
+                # Build the payload on the interval whether or not anyone is
+                # listening: /tactical/ask and /tactical/stats read the latest
+                # state, so gating this on connected clients meant the ask
+                # endpoint saw nothing unless a browser happened to be open.
+                send_due = now - last_send >= interval
+                snapshot_due = (
+                    self.snapshot_sink is not None
+                    and self.frame_id % max(1, self.config.snapshot_every) == 0
+                )
+                if send_due or snapshot_due:
+                    payload = self._build_payload(result)
+                    self._last_payload = payload
+                    if snapshot_due:
+                        try:
+                            await self.snapshot_sink(payload)
+                        except Exception:
+                            logger.exception("Could not persist tactical snapshot")
+                    if send_due and self._clients:
+                        await self._broadcast(payload)
+                    if send_due:
+                        last_send = now
 
-            await asyncio.sleep(0)  # yield
+                await asyncio.sleep(0)  # yield
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Tactical analysis stopped unexpectedly")
+            self._last_error = f"Analysis stopped: {exc}"
+            payload = {"type": "error", "error": self._last_error}
+            self._last_payload = payload
+            await self._broadcast(payload)
+        finally:
+            self._running = False
+            self._close_source()
+            if self.stopped_sink is not None:
+                try:
+                    elapsed = max(0.0, time.time() - self.started_at)
+                    await self.stopped_sink(self.frame_id, elapsed, self._last_error)
+                except Exception:
+                    logger.exception("Could not finalise tactical session")
 
     def _analyze(self, frame: np.ndarray):
         """Blocking: run the engine and this project's analysis layers."""
@@ -308,6 +371,7 @@ class TacticalPipeline:
                 "counts": result.counts,
                 "team_counts": team_counts,
                 "team_ready": result.team_ready,
+                "team_status": result.team_status,
                 "concepts": concepts,
                 "situations_stored": len(self._situations) if self._situations else 0,
             },

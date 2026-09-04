@@ -6,6 +6,8 @@ Tables:
     plays           — one row per detected snap
     player_tracks   — positional history per play
     fan_predictions — fan Predict-the-Play submissions
+    tactical_sessions — durable metadata for football analysis runs
+    tactical_snapshots — sampled pitch states used by history and reports
 """
 
 CREATE_GAMES = """
@@ -51,4 +53,44 @@ CREATE TABLE IF NOT EXISTS fan_predictions (
 );
 """
 
-ALL_TABLES = [CREATE_GAMES, CREATE_PLAYS, CREATE_PLAYER_TRACKS, CREATE_FAN_PREDICTIONS]
+CREATE_TACTICAL_SESSIONS = """
+CREATE TABLE IF NOT EXISTS tactical_sessions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name     TEXT    NOT NULL,
+    source_type     TEXT    NOT NULL,
+    source_path     TEXT,
+    started_at      REAL    NOT NULL,
+    ended_at        REAL,
+    frames          INTEGER NOT NULL DEFAULT 0,
+    elapsed_s       REAL    NOT NULL DEFAULT 0,
+    status          TEXT    NOT NULL DEFAULT 'running',
+    error           TEXT,
+    report_path     TEXT,
+    tracking_path   TEXT,
+    metrics_path    TEXT
+);
+"""
+
+CREATE_TACTICAL_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS tactical_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES tactical_sessions(id) ON DELETE CASCADE,
+    frame_id        INTEGER NOT NULL,
+    time_s          REAL    NOT NULL,
+    players_json    TEXT    NOT NULL,
+    ball_json       TEXT,
+    concepts_json   TEXT,
+    counts_json     TEXT,
+    created_at      REAL    NOT NULL,
+    UNIQUE(session_id, frame_id)
+);
+"""
+
+ALL_TABLES = [
+    CREATE_GAMES,
+    CREATE_PLAYS,
+    CREATE_PLAYER_TRACKS,
+    CREATE_FAN_PREDICTIONS,
+    CREATE_TACTICAL_SESSIONS,
+    CREATE_TACTICAL_SNAPSHOTS,
+]

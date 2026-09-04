@@ -24,11 +24,16 @@ refinement.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+# Joblib's physical-core probe relies on platform tools that may be sandboxed.
+# The logical count is a safe explicit fallback and avoids a noisy warning.
+_logical_cpus = os.cpu_count() or 1
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(max(1, _logical_cpus - 1)))
 
 TEAM_A = 0
 TEAM_B = 1
@@ -220,6 +225,48 @@ class TeamAssigner:
             + np.linalg.norm(centroids[1] - self._centroids[0])
         )
         return centroids[::-1] if swap < keep else centroids
+
+
+class CropTeamClassifier:
+    """Small fit/predict adapter for detector crops.
+
+    It has the interface used by Roboflow's embedding classifier, but relies
+    only on jersey colour. This makes the default live path instant, local,
+    and independent of a large model download.
+    """
+
+    def __init__(self):
+        self._assigner = TeamAssigner(refit_every=0, min_players=2)
+
+    @staticmethod
+    def _colour(crop: np.ndarray) -> Optional[np.ndarray]:
+        if crop is None or crop.size == 0:
+            return None
+        h, w = crop.shape[:2]
+        if h < 6 or w < 3:
+            return None
+        import cv2
+        patch = crop[int(.20 * h):max(int(.60 * h), int(.20 * h) + 1),
+                     int(.25 * w):max(int(.75 * w), int(.25 * w) + 1)]
+        if patch.size == 0:
+            return None
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        return hsv.reshape(-1, 3).mean(axis=0)
+
+    def fit(self, crops: Sequence[np.ndarray]) -> "CropTeamClassifier":
+        colours = [c for c in (self._colour(crop) for crop in crops) if c is not None]
+        if len(colours) < 2:
+            raise ValueError("not enough valid jersey crops")
+        self._assigner._fit(colours)
+        return self
+
+    def predict(self, crops: Sequence[np.ndarray]) -> np.ndarray:
+        if not self._assigner.is_fitted:
+            raise RuntimeError("team classifier is not fitted")
+        return np.asarray([
+            self._assigner._nearest_team(colour) if colour is not None else TEAM_UNKNOWN
+            for colour in (self._colour(crop) for crop in crops)
+        ], dtype=int)
 
 
 if __name__ == "__main__":

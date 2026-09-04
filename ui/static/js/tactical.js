@@ -18,6 +18,7 @@
   let showControl = true;
   let showHull = true;
   let showTrails = false;
+  let currentSessionId = null;
 
   const TEAM_COLORS = { "0": "#e5484d", "1": "#3b82f6", "-1": "#9aa0a6" };
   const TEAM_RGB = { "0": [229, 72, 77], "1": [59, 130, 246] };
@@ -163,9 +164,12 @@
     }
     if (pitch.ball) {
       const [bx, by] = toCanvas(pitch.ball.x, pitch.ball.y);
+      ctx.save();
+      ctx.globalAlpha = pitch.ball.stale ? 0.45 : 1;
       dot(bx, by, 5, "#ffffff");
       ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -173,6 +177,11 @@
   el("btn-start").addEventListener("click", openPicker);
   el("btn-stop").addEventListener("click", stopSession);
   el("modal-cancel").addEventListener("click", closePicker);
+  el("btn-upload").addEventListener("click", () => el("video-upload").click());
+  el("video-upload").addEventListener("change", (e) => {
+    if (e.target.files && e.target.files[0]) uploadVideo(e.target.files[0]);
+    e.target.value = "";
+  });
   el("source-modal").addEventListener("click", (e) => {
     if (e.target === el("source-modal")) closePicker();
   });
@@ -195,6 +204,12 @@
       grid.style.display = "grid";
 
       const videos = vids.videos || [];
+      grid.appendChild(section("Your video", "Copied into the app's local uploads folder; nothing is sent to a cloud service."));
+      const upload = card(
+        '<div class="src-icon film"></div><div class="src-name">Upload from this computer</div><div class="src-meta">MP4, MOV, MKV, AVI, or WebM · up to 5 GB</div>',
+        () => el("video-upload").click()
+      );
+      grid.appendChild(upload);
       if (videos.length) {
         grid.appendChild(section("Video files", "Most reliable. Runs start to finish without needing anything visible on screen."));
         videos.forEach((v) => grid.appendChild(videoCard(v)));
@@ -250,6 +265,26 @@
       () => begin({ video_path: v.path })
     );
   }
+
+  function uploadVideo(file) {
+    const grid = el("source-grid"), state = el("source-state");
+    grid.style.display = "none"; state.style.display = "block";
+    state.textContent = `Uploading ${file.name}… 0%`;
+    const form = new FormData(); form.append("video", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/tactical/upload");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) state.textContent = `Uploading ${file.name}… ${Math.round(100 * e.loaded / e.total)}%`;
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (_) {}
+      if (xhr.status >= 200 && xhr.status < 300 && data.ok) begin({ video_path: data.video.path });
+      else { state.textContent = data.error || "Upload failed."; }
+    };
+    xhr.onerror = () => { state.textContent = "Upload failed. Check that the server is still running."; };
+    xhr.send(form);
+  }
   function winCard(w) {
     // `on_screen` is false for a minimised window or one on another Space.
     // macOS draws no pixels for those, so they cannot be captured until
@@ -291,6 +326,7 @@
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed to start");
       running = true;
+      currentSessionId = data.session_id || null;
       btn.style.display = "none";
       el("btn-stop").style.display = "";
       el("source-label").textContent = data.source || "";
@@ -305,7 +341,21 @@
 
   async function stopSession() {
     el("btn-stop").disabled = true;
-    await fetch("/tactical/stop", { method: "POST" });
+    try {
+      const res = await fetch("/tactical/stop", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed to stop");
+      currentSessionId = data.session_id || currentSessionId;
+    } catch (err) {
+      el("btn-stop").disabled = false;
+      setNotice("Could not stop analysis: " + err.message, true);
+      return;
+    }
+    setIdleUi();
+    loadHistory();
+  }
+
+  function setIdleUi() {
     running = false;
     if (ws) { ws.close(); ws = null; }
     el("btn-stop").disabled = false;
@@ -320,7 +370,17 @@
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws/tactical`);
     ws.onopen = () => { const t = setInterval(() => { if (ws && ws.readyState === 1) ws.send("p"); else clearInterval(t); }, 1000); };
-    ws.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) {} };
+    ws.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.type === "error") {
+          setIdleUi();
+          setNotice(payload.error || "Analysis stopped unexpectedly.", true);
+          return;
+        }
+        render(payload);
+      } catch (_) {}
+    };
     ws.onclose = () => { if (running) setTimeout(connect, 1000); };
   }
 
@@ -350,7 +410,10 @@
     }
 
     const cal = el("cal-chip");
-    if (pitch.calibrated) {
+    if (pitch.saved) {
+      cal.textContent = "Saved pitch state";
+      cal.className = "chip ok";
+    } else if (pitch.calibrated) {
       cal.textContent = `Calibrated · ${pitch.n_keypoints} landmarks`;
       cal.className = "chip ok";
     } else {
@@ -374,7 +437,13 @@
     const un = tc["-1"] ?? 0;
     el("count-u").textContent = un;
     el("row-unassigned").style.display = un > 0 ? "" : "none";
-    el("team-pending").style.display = pitch.team_ready ? "none" : "";
+    const teamPending = el("team-pending");
+    teamPending.style.display = pitch.team_ready ? "none" : "";
+    teamPending.textContent = pitch.team_status === "unavailable"
+      ? "Team classification is unavailable; player tracking continues."
+      : (String(pitch.team_status || "").includes("siglip")
+          ? "Learning teams with the optional SigLIP model…"
+          : "Learning kit colours locally from the opening frames…");
 
     el("sit-count").textContent = pitch.situations_stored ?? 0;
     renderConcepts(pitch.concepts);
@@ -455,6 +524,75 @@
     }
   }
 
+  // ── Persistent session history + exports ─────────────────────────────
+  async function loadHistory() {
+    const box = el("history-list");
+    try {
+      const data = await (await fetch("/tactical/sessions?limit=12")).json();
+      const sessions = data.sessions || [];
+      box.innerHTML = "";
+      if (!sessions.length) {
+        box.innerHTML = '<div class="muted">No sessions yet.</div>';
+        return;
+      }
+      sessions.forEach((s) => box.appendChild(historyRow(s)));
+    } catch (_) {
+      box.innerHTML = '<div class="muted">Could not load local history.</div>';
+    }
+  }
+
+  function historyRow(s) {
+    const row = document.createElement("div"); row.className = "history-row";
+    const date = new Date((s.started_at || 0) * 1000).toLocaleString([], { dateStyle:"short", timeStyle:"short" });
+    row.innerHTML =
+      `<div class="history-head"><div class="history-name">${esc(s.source_name)}</div><span class="chip ${s.status === "complete" ? "ok" : "warn"}">${esc(s.status)}</span></div>` +
+      `<div class="muted">${date} · ${s.frames || 0} frames · ${fmtTime(s.elapsed_s)} · ${s.snapshots || 0} snapshots</div>` +
+      '<div class="history-actions"><button class="btn view-session">View last state</button><button class="btn build-report">Build exports</button></div>' +
+      '<div class="download-links"></div>';
+    row.querySelector(".view-session").addEventListener("click", () => viewSession(s.id));
+    row.querySelector(".build-report").addEventListener("click", (e) => buildExports(s.id, e.target, row));
+    const links = row.querySelector(".download-links");
+    for (const kind of ["report", "tracking", "metrics"]) {
+      if (s[`${kind}_path`]) links.insertAdjacentHTML("beforeend", `<a href="/tactical/sessions/${s.id}/download/${kind}">${kind}</a>`);
+    }
+    return row;
+  }
+
+  async function viewSession(id) {
+    try {
+      const data = await (await fetch(`/tactical/sessions/${id}`)).json();
+      const snaps = data.snapshots || [], snap = snaps[snaps.length - 1];
+      if (!snap) throw new Error("This session has no saved pitch states.");
+      const pitch = {
+        pitch_length:PITCH_L, pitch_width:PITCH_W, calibrated:true,
+        saved:true,
+        n_keypoints:0, players:snap.players, ball:snap.ball,
+        counts:snap.counts, concepts:snap.concepts, team_counts:{"0":0,"1":0,"-1":0},
+        team_ready:true, situations_stored:snaps.length,
+      };
+      (snap.players || []).filter((p) => p.role === "player").forEach((p) => {
+        const k = String(p.team); pitch.team_counts[k] = (pitch.team_counts[k] || 0) + 1;
+      });
+      render({ pitch, frame_id:snap.frame_id, elapsed_s:snap.time_s, fps:0, timings_ms:{} });
+      setNotice(`Reviewing saved session ${id}, frame ${snap.frame_id}.`);
+    } catch (err) { setNotice(err.message, true); }
+  }
+
+  async function buildExports(id, btn, row) {
+    btn.disabled = true; btn.textContent = "Building…";
+    try {
+      const res = await fetch(`/tactical/sessions/${id}/artifacts`, { method:"POST" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Could not build exports");
+      const links = row.querySelector(".download-links"); links.innerHTML = "";
+      Object.entries(data.downloads || {}).forEach(([kind, url]) => {
+        links.insertAdjacentHTML("beforeend", `<a href="${url}">${kind}</a>`);
+      });
+      if (!data.report_available) setNotice("CSV exports are ready. A visual report needs resolved team data from a longer session.");
+    } catch (err) { setNotice(err.message, true); }
+    finally { btn.disabled = false; btn.textContent = "Rebuild exports"; }
+  }
+
   // ── Toggles + helpers ────────────────────────────────────────────────
   el("toggle-control").addEventListener("change", (e) => { showControl = e.target.checked; });
   el("toggle-hull").addEventListener("change", (e) => { showHull = e.target.checked; });
@@ -522,5 +660,6 @@
   }
 
   drawPitch(null);
+  loadHistory();
   window.FootballVisionTactical = { render };
 })();

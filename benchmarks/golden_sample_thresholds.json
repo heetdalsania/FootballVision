@@ -1,0 +1,9 @@
+{
+  "football_rate": {"min": 0.95},
+  "calibrated_rate": {"min": 0.80},
+  "median_people": {"min": 10, "max": 35},
+  "projection_rate": {"min": 0.70},
+  "resolved_team_rate": {"min": 0.25},
+  "team_flip_rate": {"max": 0.05},
+  "p95_latency_ms": {"max": 5000}
+}
