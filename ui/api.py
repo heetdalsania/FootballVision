@@ -41,6 +41,8 @@ from src.pipeline import AnalysisPipeline, PipelineConfig
 from db.session import (
     create_tactical_session,
     finish_tactical_session,
+    get_tactical_event,
+    get_tactical_events,
     get_tactical_session,
     get_tactical_snapshots,
     init_db,
@@ -49,6 +51,8 @@ from db.session import (
     save_play,
     save_prediction,
     save_tactical_snapshot,
+    save_tactical_events,
+    set_tactical_event_clip,
     set_tactical_artifacts,
 )
 
@@ -421,8 +425,12 @@ async def tactical_start(body: TacticalStartRequest):
     async def finalise(frames, elapsed_s, error, sid=session_id):
         await finish_tactical_session(sid, frames, elapsed_s, error)
 
+    async def persist_events(events, sid=session_id):
+        await save_tactical_events(sid, events)
+
     _tac.snapshot_sink = persist
     _tac.stopped_sink = finalise
+    _tac.event_sink = persist_events
     result = await _tac.start()
     result["session_id"] = session_id
     if not result.get("ok"):
@@ -527,7 +535,48 @@ async def tactical_session_detail(session_id: int):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     snapshots = await get_tactical_snapshots(session_id)
-    return JSONResponse({"session": session, "snapshots": snapshots})
+    events = await get_tactical_events(session_id)
+    for event in events:
+        if event.get("clip_path"):
+            event["clip_url"] = "/" + event["clip_path"].lstrip("/")
+    return JSONResponse({"session": session, "snapshots": snapshots, "events": events})
+
+
+@app.post("/tactical/sessions/{session_id}/events/{event_id}/clip")
+async def tactical_event_clip(session_id: int, event_id: int):
+    """Build a six-second local clip around a persisted video event."""
+    session = await get_tactical_session(session_id)
+    event = await get_tactical_event(session_id, event_id)
+    if not session or not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if session.get("source_type") != "video" or not session.get("source_path"):
+        return JSONResponse(
+            {"ok": False, "error": "Clip export is available for video-file sessions"},
+            status_code=409,
+        )
+    if event.get("source_time_s") is None:
+        return JSONResponse(
+            {"ok": False, "error": "This event has no source-video timestamp"},
+            status_code=409,
+        )
+    try:
+        source = _resolve_tactical_video(session["source_path"])
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+    filename = f"session-{session_id}-event-{event_id}.mp4"
+    output = CLIPS_DIR / filename
+    from src.event_clip import build_event_clip
+    import asyncio
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, build_event_clip, source, output, event["source_time_s"]
+        )
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    clip_path = str(output.relative_to(ROOT))
+    await set_tactical_event_clip(session_id, event_id, clip_path)
+    return JSONResponse({"ok": True, "clip_url": f"/clips/{filename}"})
 
 
 @app.post("/tactical/sessions/{session_id}/artifacts")
@@ -536,6 +585,7 @@ async def tactical_build_artifacts(session_id: int):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     snapshots = await get_tactical_snapshots(session_id)
+    events = await get_tactical_events(session_id)
     from src.session_report import build_session_artifacts
     import asyncio
     try:
@@ -543,6 +593,7 @@ async def tactical_build_artifacts(session_id: int):
             None,
             build_session_artifacts,
             snapshots,
+            events,
             ANALYSIS_DIR,
             session_id,
             session["source_name"],
@@ -558,10 +609,11 @@ async def tactical_build_artifacts(session_id: int):
         report_path=rel(result["report"]),
         tracking_path=rel(result["tracking"]),
         metrics_path=rel(result["metrics"]),
+        events_path=rel(result["events"]),
     )
     downloads = {
         kind: f"/tactical/sessions/{session_id}/download/{kind}"
-        for kind in ("tracking", "metrics")
+        for kind in ("tracking", "metrics", "events")
     }
     if result["report"]:
         downloads["report"] = f"/tactical/sessions/{session_id}/download/report"
@@ -576,7 +628,7 @@ async def tactical_build_artifacts(session_id: int):
 
 @app.get("/tactical/sessions/{session_id}/download/{kind}")
 async def tactical_download(session_id: int, kind: str):
-    if kind not in {"report", "tracking", "metrics"}:
+    if kind not in {"report", "tracking", "metrics", "events"}:
         raise HTTPException(status_code=404, detail="Artifact not found")
     session = await get_tactical_session(session_id)
     if not session or not session.get(f"{kind}_path"):
@@ -595,6 +647,7 @@ async def tactical_download(session_id: int, kind: str):
 class AskRequest(BaseModel):
     question: str
     backend: str = "auto"
+    pitch: Optional[dict] = None
 
 @app.post("/tactical/ask")
 async def tactical_ask(body: AskRequest):
@@ -606,7 +659,10 @@ async def tactical_ask(body: AskRequest):
     block so the caller can show exactly what the model was allowed to see.
     """
     from src.grounded_ask import answer
-    pitch = (_tac._last_payload or {}).get("pitch") or {}
+    # A reviewed historical moment lives in the browser rather than in the
+    # currently idle pipeline. Accept that exact displayed measurement state
+    # so Ask remains grounded while the user scrubs a saved session.
+    pitch = body.pitch or (_tac._last_payload or {}).get("pitch") or {}
     loop = __import__("asyncio").get_event_loop()
     result = await loop.run_in_executor(None, answer, body.question, pitch, body.backend)
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)

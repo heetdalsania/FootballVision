@@ -51,16 +51,19 @@ def percentile(values: list[float], pct: float) -> float:
 def benchmark(video: Path, frames: int, stride: int, width: int, device: str) -> dict:
     import cv2
     from src.fv_engine import FootballEngine
+    from src.match_intelligence import MatchIntelligence
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise RuntimeError(f"could not open {video}")
     engine = FootballEngine(device=device, player_imgsz=width, team_backend="local")
     engine.load()
+    intelligence = MatchIntelligence()
 
     timings, people_counts = [], []
     football = calibrated = projected = detected_people = resolved = outfield = 0
     team_flips = team_transitions = 0
+    possession_frames = formation_frames = event_count = 0
     last_teams: dict[int, int] = {}
     read_frame = analysed = 0
     started = time.perf_counter()
@@ -95,6 +98,20 @@ def benchmark(video: Path, frames: int, stride: int, width: int, device: str) ->
                         team_transitions += 1
                         team_flips += int(last_teams[track_id] != team)
                     last_teams[track_id] = team
+        video_time_s = float(cap.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
+        intel = intelligence.update(
+            result.players,
+            result.ball,
+            analysed,
+            video_time_s,
+            video_time_s,
+        )
+        possession_frames += int(intel["possession"] is not None)
+        formation_frames += int(all(
+            f.get("name") != "insufficient data"
+            for f in intel["formations"].values()
+        ))
+        event_count += len(intel["new_events"])
     cap.release()
     elapsed = time.perf_counter() - started
     if not analysed:
@@ -112,6 +129,9 @@ def benchmark(video: Path, frames: int, stride: int, width: int, device: str) ->
         "projection_rate": round(projected / max(detected_people, 1), 4),
         "resolved_team_rate": round(resolved / max(outfield, 1), 4),
         "team_flip_rate": round(team_flips / max(team_transitions, 1), 4),
+        "possession_rate": round(possession_frames / analysed, 4),
+        "formation_ready_rate": round(formation_frames / analysed, 4),
+        "events_emitted": event_count,
         "mean_latency_ms": round(statistics.mean(timings), 1),
         "p95_latency_ms": round(percentile(timings, .95), 1),
         "throughput_fps": round(analysed / max(elapsed, 1e-9), 3),
@@ -121,7 +141,7 @@ def benchmark(video: Path, frames: int, stride: int, width: int, device: str) ->
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=Path, default=ROOT / "data/sample.mp4")
-    parser.add_argument("--frames", type=int, default=12)
+    parser.add_argument("--frames", type=int, default=30)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--device", default="mps")

@@ -54,7 +54,7 @@ Rules you must follow:
 - Never state a specific number, position, or claim that is not in the FACTS block. If you happen to "know" something about football that is not measured here, do not assert it about this match.
 - If the question cannot be answered from the FACTS, say plainly that the data does not cover it. Do not guess, and do not fill the gap with plausible-sounding detail.
 - You may reason over the facts (compare two numbers, note which team is higher, describe shape) as long as every number you cite appears in the block.
-- Coordinates are in metres on a 105 x 68 m pitch. x runs goal to goal, y runs across the width. Team A defends the low-x end.
+- Coordinates are in metres on a 105 x 68 m pitch. x runs goal to goal and y runs across the width. Use the measured attacking directions when comparing line height.
 - Read each metric in the direction the FACTS block states. Several are inverted: a SMALLER compactness number means a team is MORE compact, and a SMALLER pressing distance means TIGHTER engagement. Do not assume a bigger number is "more" of the quality being named.
 - Be brief and concrete. Two or three sentences unless more is genuinely needed. Write like an analyst talking to a coach, not like a chatbot."""
 
@@ -101,6 +101,7 @@ def build_facts_block(pitch: Dict) -> Tuple[str, bool]:
         lines.append("- ball: not detected this frame")
 
     concepts = pitch.get("concepts") or {}
+    intelligence = pitch.get("intelligence") or {}
     teams = concepts.get("teams") or {}
     for key, label in (("0", "TEAM A"), ("1", "TEAM B")):
         s = teams.get(key)
@@ -109,8 +110,11 @@ def build_facts_block(pitch: Dict) -> Tuple[str, bool]:
         lines.append(f"\n{label} SHAPE")
         lines.append(f"- players measured: {s['n']}")
         lines.append(f"- centroid: x={s['centroid'][0]} m, y={s['centroid'][1]} m")
-        lines.append(f"- line height (centroid x): {s['line_height_m']} m "
-                     f"(higher x = further up the pitch toward team B's goal)")
+        direction = (intelligence.get("directions") or {}).get(key)
+        direction_note = ("attacks toward increasing x" if direction == 1
+                          else "attacks toward decreasing x" if direction == -1
+                          else "attacking direction unresolved")
+        lines.append(f"- line height (centroid x): {s['line_height_m']} m ({direction_note})")
         lines.append(f"- compactness: {s['compactness_m']} m mean distance to centroid "
                      f"(SMALLER = MORE compact / tighter; larger = more spread out)")
         lines.append(f"- width across pitch: {s['width_m']} m (larger = more spread laterally)")
@@ -132,9 +136,11 @@ def build_facts_block(pitch: Dict) -> Tuple[str, bool]:
         comp_a, comp_b = a["compactness_m"], b["compactness_m"]
         tighter = "team A" if comp_a < comp_b else "team B"
         lines.append(f"- more compact (tighter): {tighter}, by {abs(round(comp_a - comp_b, 2))} m")
-        lh_a, lh_b = a["line_height_m"], b["line_height_m"]
+        directions = intelligence.get("directions") or {"0": 1, "1": -1}
+        lh_a = a["line_height_m"] if directions.get("0", 1) > 0 else 105 - a["line_height_m"]
+        lh_b = b["line_height_m"] if directions.get("1", -1) > 0 else 105 - b["line_height_m"]
         higher = "team A" if lh_a > lh_b else "team B"
-        lines.append(f"- higher line (further up the pitch): {higher}, by {abs(round(lh_a - lh_b, 2))} m")
+        lines.append(f"- higher line in its own attacking direction: {higher}, by {abs(round(lh_a - lh_b, 2))} m")
         w_a, w_b = a["width_m"], b["width_m"]
         wider = "team A" if w_a > w_b else "team B"
         lines.append(f"- wider across the pitch: {wider}, by {abs(round(w_a - w_b, 2))} m")
@@ -144,6 +150,35 @@ def build_facts_block(pitch: Dict) -> Tuple[str, bool]:
             f"\nPRESSING\n- mean distance from each player to nearest opponent: "
             f"{concepts['pressing_m']} m (smaller means tighter engagement)"
         )
+
+    possession = intelligence.get("possession")
+    if possession:
+        team = "A" if possession.get("team") == 0 else "B"
+        lines.append("\nMATCH INTELLIGENCE (temporally inferred from repeated frames)")
+        lines.append(
+            f"- possession: team {team}, player id {possession.get('player_id')}, "
+            f"confidence {possession.get('confidence')}"
+        )
+        phase = intelligence.get("phase") or {}
+        if phase.get("label"):
+            lines.append(f"- phase: {phase['label']} ({phase.get('zone') or 'zone unknown'})")
+    formations = intelligence.get("formations") or {}
+    for key, label in (("0", "A"), ("1", "B")):
+        formation = formations.get(key) or {}
+        if formation.get("name") and formation["name"] != "insufficient data":
+            lines.append(
+                f"- estimated formation team {label}: {formation['name']} "
+                f"(confidence {formation.get('confidence')})"
+            )
+    recent_events = intelligence.get("events") or []
+    if recent_events:
+        lines.append("- recent inferred events:")
+        for event in recent_events[-5:]:
+            lines.append(
+                f"  - {event.get('label')} at "
+                f"{event.get('source_time_s') if event.get('source_time_s') is not None else event.get('time_s')} s "
+                f"(confidence {event.get('confidence')})"
+            )
 
     # Individual positions last: useful for "where is X" questions, and the
     # model can count them, but they are the bulkiest part of the block.
@@ -221,6 +256,105 @@ def _ask_anthropic(question: str, facts: str) -> Tuple[Optional[str], Optional[s
         return None, f"Anthropic request failed: {exc}"
 
 
+def _rule_based_answer(question: str, pitch: Dict) -> str:
+    """Dependency-free answers for the dashboard's measurable questions."""
+    q = question.lower()
+    concepts = pitch.get("concepts") or {}
+    teams = concepts.get("teams") or {}
+    a, b = teams.get("0"), teams.get("1")
+    intelligence = pitch.get("intelligence") or {}
+    possession = intelligence.get("possession")
+    formations = intelligence.get("formations") or {}
+    phase = intelligence.get("phase") or {}
+
+    unmeasured = (
+        "score", "scored", "goal scorer", "who scored", "yellow card",
+        "red card", "foul", "offside", "player name", "substitution",
+    )
+    if any(term in q for term in unmeasured):
+        return (
+            "The measured data does not cover that. FootballVision currently "
+            "tracks positions and inferred match states, not verified goals, "
+            "discipline, identities, or the scoreline."
+        )
+
+    if "possession" in q or "has the ball" in q:
+        if not possession:
+            return "Possession is unresolved because there is not enough repeated ball-to-player evidence."
+        team = "Team A" if possession.get("team") == 0 else "Team B"
+        return (f"{team} has inferred possession through player {possession.get('player_id')} "
+                f"at {round(100 * float(possession.get('confidence') or 0))}% confidence.")
+
+    if "formation" in q or "shape" in q:
+        parts = []
+        for key, label in (("0", "Team A"), ("1", "Team B")):
+            form = formations.get(key) or {}
+            if form.get("name") and form["name"] != "insufficient data":
+                parts.append(f"{label} is estimated as {form['name']} "
+                             f"({round(100 * float(form.get('confidence') or 0))}% confidence)")
+        return "; ".join(parts) + "." if parts else "There are not enough resolved players to estimate both formations."
+
+    if ("phase" in q or "third" in q) and phase.get("label"):
+        team = ({0: "Team A", 1: "Team B"}.get(phase.get("team"), "Neither team"))
+        return f"{team} is in the {phase['label']} phase, in the {phase.get('zone') or 'unresolved zone'}."
+
+    if a and b and ("compact" in q or "tight" in q):
+        winner = "Team A" if a["compactness_m"] < b["compactness_m"] else "Team B"
+        gap = abs(round(a["compactness_m"] - b["compactness_m"], 2))
+        return f"{winner} is more compact by {gap} m mean distance to its centroid."
+
+    if a and b and "wide" in q:
+        winner = "Team A" if a["width_m"] > b["width_m"] else "Team B"
+        gap = abs(round(a["width_m"] - b["width_m"], 2))
+        return f"{winner} is wider by {gap} m across the pitch."
+
+    if a and b and ("higher" in q or "line" in q or "press" in q):
+        directions = intelligence.get("directions") or {"0": 1, "1": -1}
+        progress_a = a["line_height_m"] if directions.get("0", 1) > 0 else 105 - a["line_height_m"]
+        progress_b = b["line_height_m"] if directions.get("1", -1) > 0 else 105 - b["line_height_m"]
+        winner = "Team A" if progress_a > progress_b else "Team B"
+        gap = abs(round(progress_a - progress_b, 2))
+        pressing = concepts.get("pressing_m")
+        suffix = f" Average nearest-opponent distance is {pressing} m." if pressing is not None else ""
+        return f"{winner} holds the higher line in its attacking direction by {gap} m.{suffix}"
+
+    control = concepts.get("control") or {}
+    if control and ("control" in q or "territory" in q or "space" in q):
+        a_pct, b_pct = control.get("0", 0), control.get("1", 0)
+        winner = "Team A" if a_pct > b_pct else "Team B"
+        return (f"{winner} has more nearest-player pitch control: "
+                f"Team A {a_pct}% and Team B {b_pct}%. "
+                "The current measurements do not label a specific named space or channel.")
+
+    summary = []
+    if possession:
+        summary.append(f"Team {'A' if possession.get('team') == 0 else 'B'} has inferred possession")
+    if phase.get("label"):
+        summary.append(f"the phase is {phase['label']}")
+    if concepts.get("pressing_m") is not None:
+        summary.append(f"mean nearest-opponent distance is {concepts['pressing_m']} m")
+    if summary:
+        return "; ".join(summary).capitalize() + ". Ask about possession, formations, compactness, width, line height, or pitch control for a precise comparison."
+    return "The current measurements do not cover that question, so I cannot answer it without guessing."
+
+
+def _has_deterministic_intent(question: str) -> bool:
+    """Return True when the question maps directly to measured dashboard data.
+
+    These high-value questions should never be delegated to a generative model:
+    even a grounded local model can confuse possession with territorial control.
+    """
+    q = question.lower()
+    terms = (
+        "possession", "has the ball", "formation", "shape", "phase", "third",
+        "compact", "tight", "wide", "width", "higher", "line", "press",
+        "control", "territory", "space", "score", "scored", "goal scorer",
+        "who scored", "yellow card", "red card", "foul", "offside",
+        "player name", "substitution",
+    )
+    return any(term in q for term in terms)
+
+
 def answer(question: str, pitch: Dict, backend: str = "auto") -> Dict:
     """
     Answer a question using only the current frame's measurements.
@@ -244,6 +378,10 @@ def answer(question: str, pitch: Dict, backend: str = "auto") -> Dict:
             "grounded": False,
         }
 
+    if backend == "rules" or (backend == "auto" and _has_deterministic_intent(question)):
+        return {"ok": True, "answer": _rule_based_answer(question, pitch),
+                "facts": facts, "backend": "local rules", "grounded": True}
+
     order = ["anthropic", "ollama"] if backend == "auto" and os.environ.get("ANTHROPIC_API_KEY") \
         else ["ollama", "anthropic"] if backend == "auto" else [backend]
 
@@ -254,6 +392,10 @@ def answer(question: str, pitch: Dict, backend: str = "auto") -> Dict:
             return {"ok": True, "answer": text, "facts": facts,
                     "backend": b, "grounded": True}
         errors.append(f"{b}: {err}")
+
+    if backend == "auto":
+        return {"ok": True, "answer": _rule_based_answer(question, pitch),
+                "facts": facts, "backend": "local rules", "grounded": True}
 
     return {"ok": False, "error": "; ".join(errors), "facts": facts, "grounded": True}
 

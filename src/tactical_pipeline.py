@@ -73,7 +73,11 @@ class TacticalPipeline:
         self._source = None
         self._embedder = None
         self._situations = None
+        self._intelligence = None
         self._capture_error: Optional[str] = None
+        self._source_time_s: Optional[float] = None
+        self._last_source_time_s: Optional[float] = None
+        self._source_looped = False
 
         self.frame_id = 0
         self.started_at = 0.0
@@ -87,6 +91,7 @@ class TacticalPipeline:
         self.stopped_sink: Optional[
             Callable[[int, float, Optional[str]], Awaitable[None]]
         ] = None
+        self.event_sink: Optional[Callable[[List[Dict]], Awaitable[None]]] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -133,6 +138,7 @@ class TacticalPipeline:
     def _load(self) -> None:
         """Blocking setup: models and video source."""
         from src.fv_engine import FootballEngine
+        from src.match_intelligence import MatchIntelligence
         from src.state_embedding import StateEmbedder, SituationStore
 
         # Validate/open the source before paying the model-load cost. This also
@@ -152,6 +158,10 @@ class TacticalPipeline:
 
             self._embedder = StateEmbedder()
             self._situations = SituationStore(dim=self._embedder.dim)
+            self._intelligence = MatchIntelligence()
+            self._source_time_s = None
+            self._last_source_time_s = None
+            self._source_looped = False
         except Exception:
             self._close_source()
             raise
@@ -226,7 +236,15 @@ class TacticalPipeline:
                     ok, frame = src.read()
                 if not ok:
                     return None
+            source_time = max(0.0, float(src.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0)
+            self._source_looped = (
+                self._last_source_time_s is not None
+                and source_time + .05 < self._last_source_time_s
+            )
+            self._last_source_time_s = source_time
+            self._source_time_s = source_time
             return frame
+        self._source_time_s = None
         frame = src.get_frame()
         # A screen-capture miss has a reason worth showing. Reporting "no
         # players" for a window macOS is not rendering is the failure mode that
@@ -269,6 +287,12 @@ class TacticalPipeline:
 
                 self.frame_id += 1
                 result = await loop.run_in_executor(self._executor, self._analyze, frame)
+                new_events = (result.intelligence or {}).get("new_events") or []
+                if new_events and self.event_sink is not None:
+                    try:
+                        await self.event_sink(new_events)
+                    except Exception:
+                        logger.exception("Could not persist tactical events")
 
                 now = time.monotonic()
                 dt = now - t0
@@ -322,6 +346,21 @@ class TacticalPipeline:
 
         players = result.players or []
         self._last_players = players
+        if self._intelligence is not None:
+            if self._source_looped:
+                self._intelligence.start_new_period()
+                self._source_looped = False
+            evidence_time_s = (
+                self._source_time_s if self._source_time_s is not None
+                else max(0.0, time.time() - self.started_at)
+            )
+            result.intelligence = self._intelligence.update(
+                players,
+                result.ball,
+                result.frame_id,
+                evidence_time_s,
+                self._source_time_s,
+            )
 
         # Retrieval snapshots: only meaningful with both teams present.
         if (self._situations is not None and players
@@ -373,10 +412,12 @@ class TacticalPipeline:
                 "team_ready": result.team_ready,
                 "team_status": result.team_status,
                 "concepts": concepts,
+                "intelligence": result.intelligence or {},
                 "situations_stored": len(self._situations) if self._situations else 0,
             },
             "timings_ms": result.timings_ms,
             "elapsed_s": round(time.time() - self.started_at, 1),
+            "source_time_s": self._source_time_s,
         }
 
     def _encode(self, frame: Optional[np.ndarray]) -> Optional[str]:
@@ -425,4 +466,5 @@ class TacticalPipeline:
             "source": self._source_label() if self._running else None,
             "error": self._last_error,
             "elapsed_s": round(time.time() - self.started_at, 1) if self._running else 0,
+            "events": len(self._intelligence.events) if self._intelligence else 0,
         }

@@ -129,6 +129,21 @@
   .history-actions { display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
   .history-actions .btn { padding:4px 8px; font-size:11px; }
   .download-links a { color:var(--accent); font-size:11px; margin-right:9px; }
+  .intel-hero { display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+  .intel-ball { width:14px; height:14px; border-radius:50%; background:#fff; border:2px solid #555; flex:none; }
+  .intel-main { font-size:14px; font-weight:650; }
+  .confidence { height:5px; background:#0d1017; border-radius:4px; overflow:hidden; margin:7px 0 10px; }
+  .confidence i { display:block; height:100%; background:var(--ok); transition:width .25s; }
+  .event-row { display:flex; gap:8px; align-items:center; padding:7px 5px; border-top:1px solid var(--border); cursor:pointer; }
+  .event-row:hover { background:rgba(255,255,255,.025); }
+  .event-time { width:34px; flex:none; color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
+  .event-body { min-width:0; flex:1; }
+  .event-label { font-size:12px; font-weight:600; }
+  .event-detail { font-size:10.5px; color:var(--dim); }
+  .event-team { width:7px; height:24px; border-radius:4px; flex:none; }
+  .clip-action { color:var(--accent); border:0; background:none; cursor:pointer; font-size:10.5px; padding:3px; }
+  .timeline-review { display:none; border-top:1px solid var(--border); margin-top:8px; padding-top:9px; }
+  .timeline-review input { width:100%; accent-color:var(--accent); }
   .ask-in { display:flex; gap:7px; margin-bottom:9px; }
   .ask-in input {
     flex:1; min-width:0; padding:8px 10px; border-radius:7px; font-size:12.5px;
@@ -281,6 +296,28 @@
     </div>
 
     <div class="card">
+      <div class="card-t">Match intelligence</div>
+      <div class="intel-hero">
+        <span class="intel-ball"></span>
+        <div><div class="intel-main" id="possession">Possession unresolved</div><div class="muted" id="phase">Waiting for ball evidence</div></div>
+      </div>
+      <div class="confidence"><i id="possession-confidence" style="width:0%"></i></div>
+      <div class="kv">
+        <span class="k">Formation A</span><span class="v" id="formation-a">–</span>
+        <span class="k">Formation B</span><span class="v" id="formation-b">–</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-t">Event timeline</div>
+      <div id="event-list"><div class="muted">Confirmed possession changes and event candidates will appear here.</div></div>
+      <div class="timeline-review" id="timeline-review">
+        <input type="range" id="timeline-scrubber" min="0" max="0" value="0" />
+        <div class="muted" id="timeline-position">Saved state</div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-t">Structured concepts</div>
       <div id="concepts-none" class="muted">Waiting for both teams to be on the pitch.</div>
       <div id="concepts-body" style="display:none">
@@ -342,6 +379,6 @@
   </aside>
 </div>
 
-<script src="/static/js/tactical.js?v=17"></script>
+<script src="/static/js/tactical.js?v=23"></script>
 </body>
 </html>

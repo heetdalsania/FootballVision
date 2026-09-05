@@ -1,7 +1,7 @@
 {
   "metrics": {
     "video": "data/sample.mp4",
-    "frames": 12,
+    "frames": 30,
     "stride": 1,
     "width": 960,
     "device": "cpu",
@@ -9,11 +9,14 @@
     "calibrated_rate": 1.0,
     "median_people": 22.0,
     "projection_rate": 1.0,
-    "resolved_team_rate": 0.6512,
+    "resolved_team_rate": 0.8851,
     "team_flip_rate": 0.0,
-    "mean_latency_ms": 1143.1,
-    "p95_latency_ms": 2447.9,
-    "throughput_fps": 0.872
+    "possession_rate": 0.4333,
+    "formation_ready_rate": 0.8,
+    "events_emitted": 1,
+    "mean_latency_ms": 953.9,
+    "p95_latency_ms": 2339.0,
+    "throughput_fps": 1.046
   },
   "thresholds": {
     "football_rate": {
@@ -34,6 +37,16 @@
     },
     "team_flip_rate": {
       "max": 0.05
+    },
+    "possession_rate": {
+      "min": 0.2
+    },
+    "formation_ready_rate": {
+      "min": 0.4
+    },
+    "events_emitted": {
+      "min": 1,
+      "max": 8
     },
     "p95_latency_ms": {
       "max": 5000

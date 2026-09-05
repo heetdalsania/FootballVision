@@ -8,6 +8,7 @@ Tables:
     fan_predictions — fan Predict-the-Play submissions
     tactical_sessions — durable metadata for football analysis runs
     tactical_snapshots — sampled pitch states used by history and reports
+    tactical_events — possession changes and conservative match events
 """
 
 CREATE_GAMES = """
@@ -67,7 +68,8 @@ CREATE TABLE IF NOT EXISTS tactical_sessions (
     error           TEXT,
     report_path     TEXT,
     tracking_path   TEXT,
-    metrics_path    TEXT
+    metrics_path    TEXT,
+    events_path     TEXT
 );
 """
 
@@ -77,12 +79,36 @@ CREATE TABLE IF NOT EXISTS tactical_snapshots (
     session_id      INTEGER NOT NULL REFERENCES tactical_sessions(id) ON DELETE CASCADE,
     frame_id        INTEGER NOT NULL,
     time_s          REAL    NOT NULL,
+    source_time_s   REAL,
     players_json    TEXT    NOT NULL,
     ball_json       TEXT,
     concepts_json   TEXT,
     counts_json     TEXT,
+    intelligence_json TEXT,
     created_at      REAL    NOT NULL,
     UNIQUE(session_id, frame_id)
+);
+"""
+
+CREATE_TACTICAL_EVENTS = """
+CREATE TABLE IF NOT EXISTS tactical_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES tactical_sessions(id) ON DELETE CASCADE,
+    event_seq       INTEGER NOT NULL,
+    frame_id        INTEGER NOT NULL,
+    time_s          REAL    NOT NULL,
+    source_time_s   REAL,
+    event_type      TEXT    NOT NULL,
+    label           TEXT    NOT NULL,
+    team            INTEGER,
+    player_id       INTEGER,
+    confidence      REAL    NOT NULL,
+    x               REAL,
+    y               REAL,
+    detail_json     TEXT    NOT NULL,
+    clip_path       TEXT,
+    created_at      REAL    NOT NULL,
+    UNIQUE(session_id, event_seq)
 );
 """
 
@@ -93,4 +119,5 @@ ALL_TABLES = [
     CREATE_FAN_PREDICTIONS,
     CREATE_TACTICAL_SESSIONS,
     CREATE_TACTICAL_SNAPSHOTS,
+    CREATE_TACTICAL_EVENTS,
 ]

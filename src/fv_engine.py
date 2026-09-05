@@ -124,6 +124,7 @@ class FrameResult:
     counts: Dict[str, int] = field(default_factory=dict)
     team_ready: bool = False
     team_status: str = "learning"
+    intelligence: Dict = field(default_factory=dict)
     timings_ms: Dict[str, float] = field(default_factory=dict)
     #: Why nothing was found, when nothing was found. Without this the app
     #: silently reports an empty pitch whether the captured window shows a

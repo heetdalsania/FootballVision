@@ -42,8 +42,17 @@ python main.py
 Open <http://localhost:8000>. Choose a video, window, or display from **Start
 Analysis**. A video file is the most reproducible way to verify the pipeline.
 Sessions and sampled pitch states are saved in local SQLite history. From the
-dashboard, **Build exports** creates tracking CSV, metrics CSV, and a visual
-match report whenever the session contains resolved team data.
+dashboard, **Build exports** creates tracking, metrics, and event CSV files,
+plus a visual match report whenever the session contains resolved team data.
+
+On macOS, after setup you can also double-click `FootballVision.command`; it
+starts the local server and opens the dashboard in your browser.
+
+The **Match intelligence** card estimates possession, match phase, team
+direction, and formation from repeated frames. Confirmed changes populate the
+event timeline as passes, turnovers, carries, restarts, and conservative shot
+candidates. Stop a session to scrub its saved pitch states, jump from an event
+to the nearest state, or create a six-second local MP4 event clip.
 
 Useful options:
 
@@ -96,7 +105,9 @@ weights are intentionally not committed.
 | `src/tactical_pipeline.py` | Source lifecycle and real-time analysis loop |
 | `src/fv_engine.py` | Detection, tracking, team classification, calibration |
 | `src/tactical_metrics.py` | Shape, compactness, pressing, and pitch control |
+| `src/match_intelligence.py` | Temporal possession, events, phases, direction, and formations |
 | `src/state_embedding.py` | Similar-situation indexing and retrieval |
+| `src/event_clip.py` | Local event-centered MP4 clip export |
 | `src/capture.py` | macOS display/window capture |
 | `src/match_report.py` | Static post-match analyst report |
 | `src/session_report.py` | Report/CSV generation from saved live sessions |

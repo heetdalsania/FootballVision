@@ -19,6 +19,9 @@
   let showHull = true;
   let showTrails = false;
   let currentSessionId = null;
+  let currentPitch = null;
+  const sessionCache = new Map();
+  let timelineSignature = "";
 
   const TEAM_COLORS = { "0": "#e5484d", "1": "#3b82f6", "-1": "#9aa0a6" };
   const TEAM_RGB = { "0": [229, 72, 77], "1": [59, 130, 246] };
@@ -327,6 +330,7 @@
       if (!data.ok) throw new Error(data.error || "Failed to start");
       running = true;
       currentSessionId = data.session_id || null;
+      el("timeline-review").style.display = "none";
       btn.style.display = "none";
       el("btn-stop").style.display = "";
       el("source-label").textContent = data.source || "";
@@ -353,6 +357,7 @@
     }
     setIdleUi();
     loadHistory();
+    if (currentSessionId) loadSessionTimeline(currentSessionId);
   }
 
   function setIdleUi() {
@@ -387,6 +392,7 @@
   // ── Render ───────────────────────────────────────────────────────────
   function render(p) {
     const pitch = p.pitch || {};
+    currentPitch = pitch;
     PITCH_L = pitch.pitch_length || PITCH_L;
     PITCH_W = pitch.pitch_width || PITCH_W;
 
@@ -447,6 +453,7 @@
 
     el("sit-count").textContent = pitch.situations_stored ?? 0;
     renderConcepts(pitch.concepts);
+    renderIntelligence(pitch.intelligence || {});
 
     const t = p.timings_ms || {};
     el("timings").textContent = `detect ${t.detect ?? "–"} · track ${t.track ?? "–"} · team ${t.team ?? "–"} · pitch ${t.pitch ?? "–"} ms`;
@@ -546,13 +553,13 @@
     const date = new Date((s.started_at || 0) * 1000).toLocaleString([], { dateStyle:"short", timeStyle:"short" });
     row.innerHTML =
       `<div class="history-head"><div class="history-name">${esc(s.source_name)}</div><span class="chip ${s.status === "complete" ? "ok" : "warn"}">${esc(s.status)}</span></div>` +
-      `<div class="muted">${date} · ${s.frames || 0} frames · ${fmtTime(s.elapsed_s)} · ${s.snapshots || 0} snapshots</div>` +
+      `<div class="muted">${date} · ${s.frames || 0} frames · ${fmtTime(s.elapsed_s)} · ${s.snapshots || 0} snapshots · ${s.events || 0} events</div>` +
       '<div class="history-actions"><button class="btn view-session">View last state</button><button class="btn build-report">Build exports</button></div>' +
       '<div class="download-links"></div>';
     row.querySelector(".view-session").addEventListener("click", () => viewSession(s.id));
     row.querySelector(".build-report").addEventListener("click", (e) => buildExports(s.id, e.target, row));
     const links = row.querySelector(".download-links");
-    for (const kind of ["report", "tracking", "metrics"]) {
+    for (const kind of ["report", "tracking", "metrics", "events"]) {
       if (s[`${kind}_path`]) links.insertAdjacentHTML("beforeend", `<a href="/tactical/sessions/${s.id}/download/${kind}">${kind}</a>`);
     }
     return row;
@@ -560,22 +567,152 @@
 
   async function viewSession(id) {
     try {
-      const data = await (await fetch(`/tactical/sessions/${id}`)).json();
+      const data = await getSessionData(id, true);
       const snaps = data.snapshots || [], snap = snaps[snaps.length - 1];
       if (!snap) throw new Error("This session has no saved pitch states.");
-      const pitch = {
-        pitch_length:PITCH_L, pitch_width:PITCH_W, calibrated:true,
-        saved:true,
-        n_keypoints:0, players:snap.players, ball:snap.ball,
-        counts:snap.counts, concepts:snap.concepts, team_counts:{"0":0,"1":0,"-1":0},
-        team_ready:true, situations_stored:snaps.length,
-      };
-      (snap.players || []).filter((p) => p.role === "player").forEach((p) => {
-        const k = String(p.team); pitch.team_counts[k] = (pitch.team_counts[k] || 0) + 1;
-      });
-      render({ pitch, frame_id:snap.frame_id, elapsed_s:snap.time_s, fps:0, timings_ms:{} });
+      renderSavedMoment(snap, snaps.length);
+      renderTimeline(data.events || [], data.session);
+      configureScrubber(data, snaps.length - 1);
       setNotice(`Reviewing saved session ${id}, frame ${snap.frame_id}.`);
     } catch (err) { setNotice(err.message, true); }
+  }
+
+  async function getSessionData(id, refresh) {
+    if (!refresh && sessionCache.has(id)) return sessionCache.get(id);
+    const res = await fetch(`/tactical/sessions/${id}`);
+    if (!res.ok) throw new Error("Could not load this session.");
+    const data = await res.json(); sessionCache.set(id, data); return data;
+  }
+
+  function renderSavedMoment(snap, total) {
+    const pitch = {
+      pitch_length:PITCH_L, pitch_width:PITCH_W, calibrated:true, saved:true,
+      n_keypoints:0, players:snap.players, ball:snap.ball,
+      counts:snap.counts, concepts:snap.concepts, team_counts:{"0":0,"1":0,"-1":0},
+      team_ready:true, situations_stored:total, intelligence:snap.intelligence || {},
+    };
+    (snap.players || []).filter((p) => p.role === "player").forEach((p) => {
+      const k = String(p.team); pitch.team_counts[k] = (pitch.team_counts[k] || 0) + 1;
+    });
+    render({ pitch, frame_id:snap.frame_id,
+      elapsed_s:snap.source_time_s ?? snap.time_s, fps:0, timings_ms:{} });
+  }
+
+  async function viewSessionMoment(id, frameId) {
+    if (running) {
+      setNotice("Stop analysis before reviewing an earlier event.");
+      return;
+    }
+    try {
+      const data = await getSessionData(id, false), snaps = data.snapshots || [];
+      if (!snaps.length) throw new Error("No saved pitch state is available for this event.");
+      const snap = snaps.reduce((best, item) =>
+        Math.abs(item.frame_id - frameId) < Math.abs(best.frame_id - frameId) ? item : best
+      );
+      renderSavedMoment(snap, snaps.length);
+      setNotice(`Event at frame ${frameId}; showing nearest saved state at frame ${snap.frame_id}.`);
+    } catch (err) { setNotice(err.message, true); }
+  }
+
+  async function loadSessionTimeline(id) {
+    try {
+      const data = await getSessionData(id, true);
+      renderTimeline(data.events || [], data.session);
+      configureScrubber(data, Math.max(0, (data.snapshots || []).length - 1));
+    } catch (_) {}
+  }
+
+  function configureScrubber(data, selected) {
+    const snaps = data.snapshots || [], wrap = el("timeline-review"), input = el("timeline-scrubber");
+    if (!snaps.length || running) { wrap.style.display = "none"; return; }
+    wrap.style.display = "block";
+    input.min = "0"; input.max = String(snaps.length - 1); input.value = String(selected);
+    const show = () => {
+      const snap = snaps[Number(input.value)] || snaps[0];
+      renderSavedMoment(snap, snaps.length);
+      const shownTime = snap.source_time_s ?? snap.time_s;
+      el("timeline-position").textContent = `${fmtTime(shownTime)} · frame ${snap.frame_id} · saved state ${Number(input.value) + 1}/${snaps.length}`;
+    };
+    input.oninput = show;
+    const snap = snaps[selected] || snaps[0];
+    const shownTime = snap.source_time_s ?? snap.time_s;
+    el("timeline-position").textContent = `${fmtTime(shownTime)} · frame ${snap.frame_id} · saved state ${selected + 1}/${snaps.length}`;
+  }
+
+  function renderIntelligence(intel) {
+    const possession = intel.possession;
+    if (possession) {
+      const team = possession.team === 0 ? "Team A" : "Team B";
+      el("possession").textContent = `${team} · player ${possession.player_id}`;
+      el("possession").style.color = TEAM_COLORS[String(possession.team)];
+      el("possession-confidence").style.width = `${Math.round(100 * (possession.confidence || 0))}%`;
+      el("possession-confidence").style.background = TEAM_COLORS[String(possession.team)];
+    } else {
+      el("possession").textContent = "Possession unresolved";
+      el("possession").style.color = "";
+      el("possession-confidence").style.width = "0%";
+    }
+    const phase = intel.phase || {};
+    el("phase").textContent = phase.label && phase.label !== "transition"
+      ? `${phase.label} · ${phase.zone || ""}` : "Transition / waiting for ball evidence";
+    const forms = intel.formations || {};
+    for (const [team, id] of [["0", "formation-a"], ["1", "formation-b"]]) {
+      const f = forms[team];
+      el(id).textContent = !f || f.name === "insufficient data"
+        ? "–" : `${f.name} · ${Math.round(100 * (f.confidence || 0))}%`;
+    }
+    if (intel.events) renderTimeline(intel.events, { id:currentSessionId, source_type:"live" });
+  }
+
+  function renderTimeline(events, session) {
+    const signature = `${session && session.id}:${session && session.source_type}:${events.map((e) => e.id || e.event_seq).join(",")}:${events.map((e) => e.clip_url || "").join(",")}`;
+    if (signature === timelineSignature) return;
+    timelineSignature = signature;
+    const box = el("event-list"); box.innerHTML = "";
+    if (!events.length) {
+      box.innerHTML = '<div class="muted">Confirmed possession changes and event candidates will appear here.</div>';
+      return;
+    }
+    events.slice(-10).reverse().forEach((event) => {
+      const row = document.createElement("div"); row.className = "event-row";
+      const teamColor = TEAM_COLORS[String(event.team)] || "#6b7280";
+      row.innerHTML = `<span class="event-team" style="background:${teamColor}"></span>` +
+        `<span class="event-time">${fmtTime(event.source_time_s ?? event.time_s)}</span>` +
+        `<span class="event-body"><div class="event-label">${esc(event.label)}</div>` +
+        `<div class="event-detail">${esc(eventDetail(event))} · ${Math.round(100 * (event.confidence || 0))}% confidence</div></span>`;
+      row.addEventListener("click", () => viewSessionMoment((session && session.id) || currentSessionId, event.frame_id));
+      if (event.clip_url) {
+        const link = document.createElement("a"); link.className = "clip-action";
+        link.href = event.clip_url; link.target = "_blank"; link.textContent = "play clip";
+        link.addEventListener("click", (e) => e.stopPropagation()); row.appendChild(link);
+      } else if (event.id && session && session.source_type === "video") {
+        const clip = document.createElement("button"); clip.className = "clip-action";
+        clip.textContent = "make clip";
+        clip.addEventListener("click", (e) => { e.stopPropagation(); buildEventClip(session.id, event.id, clip); });
+        row.appendChild(clip);
+      }
+      box.appendChild(row);
+    });
+  }
+
+  function eventDetail(event) {
+    const d = event.detail || {};
+    if (event.type === "pass") return `player ${d.from_player_id} → ${d.to_player_id}`;
+    if (event.type === "turnover") return `won by player ${event.player_id}`;
+    if (event.type === "carry") return `${d.distance_m || "?"} m by player ${event.player_id}`;
+    if (event.type === "shot_candidate") return `${d.ball_speed_toward_goal_mps || "?"} m/s toward goal`;
+    return event.player_id == null ? "ball evidence" : `player ${event.player_id}`;
+  }
+
+  async function buildEventClip(sessionId, eventId, button) {
+    button.disabled = true; button.textContent = "building…";
+    try {
+      const res = await fetch(`/tactical/sessions/${sessionId}/events/${eventId}/clip`, { method:"POST" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Clip export failed");
+      sessionCache.delete(sessionId); await loadSessionTimeline(sessionId);
+    } catch (err) { setNotice(err.message, true); }
+    finally { button.disabled = false; }
   }
 
   async function buildExports(id, btn, row) {
@@ -630,7 +767,7 @@
     try {
       const res = await fetch("/tactical/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, pitch: currentPitch }),
       });
       const d = await res.json();
       if (d.answer) {

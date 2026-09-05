@@ -5,5 +5,8 @@
   "projection_rate": {"min": 0.70},
   "resolved_team_rate": {"min": 0.25},
   "team_flip_rate": {"max": 0.05},
+  "possession_rate": {"min": 0.20},
+  "formation_ready_rate": {"min": 0.40},
+  "events_emitted": {"min": 1, "max": 8},
   "p95_latency_ms": {"max": 5000}
 }

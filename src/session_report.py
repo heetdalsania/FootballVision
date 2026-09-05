@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Tuple
+import json
 
 import pandas as pd
 
@@ -58,6 +59,7 @@ def snapshots_to_frames(snapshots: Iterable[dict]) -> Tuple[pd.DataFrame, pd.Dat
 
 def build_session_artifacts(
     snapshots: list[dict],
+    events: list[dict],
     output_dir: str | Path,
     session_id: int,
     source_name: str,
@@ -74,26 +76,62 @@ def build_session_artifacts(
     stem = f"session-{int(session_id)}"
     tracking_path = output_dir / f"{stem}-tracking.csv"
     metrics_path = output_dir / f"{stem}-metrics.csv"
+    events_path = output_dir / f"{stem}-events.csv"
     report_path = output_dir / f"{stem}-report.png"
     tracking.to_csv(tracking_path, index=False)
     metrics.to_csv(metrics_path, index=False)
+    event_rows = []
+    for event in events:
+        event_rows.append({
+            "time_s": event.get("time_s"),
+            "source_time_s": event.get("source_time_s"),
+            "frame_id": event.get("frame_id"),
+            "type": event.get("type"),
+            "label": event.get("label"),
+            "team": event.get("team"),
+            "player_id": event.get("player_id"),
+            "confidence": event.get("confidence"),
+            "x": event.get("x"),
+            "y": event.get("y"),
+            "detail": json.dumps(event.get("detail") or {}, separators=(",", ":")),
+            "clip_path": event.get("clip_path"),
+        })
+    pd.DataFrame(event_rows, columns=[
+        "time_s", "source_time_s", "frame_id", "type", "label", "team",
+        "player_id", "confidence", "x", "y", "detail", "clip_path",
+    ]).to_csv(events_path, index=False)
 
     resolved = tracking[(tracking["role"] == "player") & tracking["team"].isin([0, 1])]
     if resolved.empty or metrics.empty:
         report = None
     else:
+        counts = pd.Series([e.get("type") for e in events]).value_counts()
+        labels = {
+            "possession_start": ("possession start", "possession starts"),
+            "pass": ("pass", "passes"),
+            "turnover": ("turnover", "turnovers"),
+            "carry": ("carry", "carries"),
+            "restart": ("restart", "restarts"),
+            "shot_candidate": ("shot candidate", "shot candidates"),
+        }
+        summary = ", ".join(
+            f"{int(count)} {labels.get(kind, (kind.replace('_', ' '), kind.replace('_', ' ') + 's'))[count != 1]}"
+            for kind, count in counts.items()
+        ) or "no inferred events"
         render(
             tracking,
             metrics,
             str(report_path),
             title="FootballVision match report",
-            subtitle=f"Session {session_id} · {source_name} · {len(snapshots)} sampled moments",
+            subtitle=(f"Session {session_id} · {source_name} · "
+                      f"{len(snapshots)} sampled moments · {summary}"),
         )
         report = str(report_path)
 
     return {
         "tracking": str(tracking_path),
         "metrics": str(metrics_path),
+        "events": str(events_path),
         "report": report,
         "tracking_rows": len(tracking),
         "metric_rows": len(metrics),

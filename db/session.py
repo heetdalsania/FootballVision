@@ -28,6 +28,22 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         for stmt in ALL_TABLES:
             await db.execute(stmt)
+        # Forward-compatible additive migration for databases created before
+        # event CSV export existed.
+        cur = await db.execute("PRAGMA table_info(tactical_sessions)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "events_path" not in columns:
+            await db.execute("ALTER TABLE tactical_sessions ADD COLUMN events_path TEXT")
+        cur = await db.execute("PRAGMA table_info(tactical_snapshots)")
+        snapshot_columns = {row[1] for row in await cur.fetchall()}
+        if "intelligence_json" not in snapshot_columns:
+            await db.execute(
+                "ALTER TABLE tactical_snapshots ADD COLUMN intelligence_json TEXT"
+            )
+        if "source_time_s" not in snapshot_columns:
+            await db.execute(
+                "ALTER TABLE tactical_snapshots ADD COLUMN source_time_s REAL"
+            )
         # A process can be killed without running the lifespan shutdown hook.
         # Do not leave those sessions looking live forever on the next launch.
         await db.execute(
@@ -167,19 +183,55 @@ async def save_tactical_snapshot(session_id: int, payload: dict) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT OR REPLACE INTO tactical_snapshots
-               (session_id, frame_id, time_s, players_json, ball_json,
-                concepts_json, counts_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (session_id, frame_id, time_s, source_time_s, players_json, ball_json,
+                concepts_json, counts_json, intelligence_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 int(payload.get("frame_id") or 0),
                 float(payload.get("elapsed_s") or 0),
+                payload.get("source_time_s"),
                 json.dumps(pitch.get("players") or [], separators=(",", ":")),
                 json.dumps(pitch.get("ball"), separators=(",", ":")),
                 json.dumps(pitch.get("concepts"), separators=(",", ":")),
                 json.dumps(pitch.get("counts") or {}, separators=(",", ":")),
+                json.dumps(pitch.get("intelligence") or {}, separators=(",", ":")),
                 time.time(),
             ),
+        )
+        await db.commit()
+
+
+async def save_tactical_events(session_id: int, events: list[dict]) -> None:
+    """Persist newly emitted match-intelligence events in one transaction."""
+    if not _AIOSQLITE or not session_id or not events:
+        return
+    rows = []
+    for event in events:
+        rows.append((
+            session_id,
+            int(event.get("event_seq") or 0),
+            int(event.get("frame_id") or 0),
+            float(event.get("time_s") or 0),
+            event.get("source_time_s"),
+            event.get("type") or "unknown",
+            event.get("label") or "Event",
+            event.get("team"),
+            event.get("player_id"),
+            float(event.get("confidence") or 0),
+            event.get("x"),
+            event.get("y"),
+            json.dumps(event.get("detail") or {}, separators=(",", ":")),
+            time.time(),
+        ))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """INSERT OR IGNORE INTO tactical_events
+               (session_id, event_seq, frame_id, time_s, source_time_s,
+                event_type, label, team, player_id, confidence, x, y,
+                detail_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
         )
         await db.commit()
 
@@ -191,6 +243,7 @@ def _decode_snapshot(row: dict) -> dict:
         ("ball_json", "ball", None),
         ("concepts_json", "concepts", None),
         ("counts_json", "counts", {}),
+        ("intelligence_json", "intelligence", {}),
     ):
         raw = out.pop(source, None)
         try:
@@ -206,10 +259,13 @@ async def list_tactical_sessions(limit: int = 30) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """SELECT s.*, COUNT(p.id) AS snapshots
+            """SELECT s.*,
+                      (SELECT COUNT(*) FROM tactical_snapshots p
+                       WHERE p.session_id = s.id) AS snapshots,
+                      (SELECT COUNT(*) FROM tactical_events e
+                       WHERE e.session_id = s.id) AS events
                FROM tactical_sessions s
-               LEFT JOIN tactical_snapshots p ON p.session_id = s.id
-               GROUP BY s.id ORDER BY s.started_at DESC LIMIT ?""",
+               ORDER BY s.started_at DESC LIMIT ?""",
             (max(1, min(int(limit), 200)),),
         )
         return [dict(row) for row in await cur.fetchall()]
@@ -233,8 +289,8 @@ async def get_tactical_snapshots(session_id: int) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """SELECT frame_id, time_s, players_json, ball_json,
-                      concepts_json, counts_json
+            """SELECT frame_id, time_s, source_time_s, players_json, ball_json,
+                      concepts_json, counts_json, intelligence_json
                FROM tactical_snapshots WHERE session_id = ?
                ORDER BY frame_id""",
             (session_id,),
@@ -242,11 +298,54 @@ async def get_tactical_snapshots(session_id: int) -> list[dict]:
         return [_decode_snapshot(dict(row)) for row in await cur.fetchall()]
 
 
+async def get_tactical_events(session_id: int) -> list[dict]:
+    if not _AIOSQLITE:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """SELECT id, event_seq, frame_id, time_s, source_time_s,
+                      event_type AS type, label, team, player_id, confidence,
+                      x, y, detail_json, clip_path
+               FROM tactical_events WHERE session_id = ?
+               ORDER BY event_seq""",
+            (session_id,),
+        )
+        events = []
+        for row in await cur.fetchall():
+            event = dict(row)
+            raw = event.pop("detail_json", None)
+            try:
+                event["detail"] = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                event["detail"] = {}
+            events.append(event)
+        return events
+
+
+async def get_tactical_event(session_id: int, event_id: int) -> Optional[dict]:
+    events = await get_tactical_events(session_id)
+    return next((event for event in events if event["id"] == event_id), None)
+
+
+async def set_tactical_event_clip(session_id: int, event_id: int, clip_path: str) -> None:
+    if not _AIOSQLITE:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE tactical_events SET clip_path = ?
+               WHERE session_id = ? AND id = ?""",
+            (clip_path, session_id, event_id),
+        )
+        await db.commit()
+
+
 async def set_tactical_artifacts(
     session_id: int,
     report_path: Optional[str] = None,
     tracking_path: Optional[str] = None,
     metrics_path: Optional[str] = None,
+    events_path: Optional[str] = None,
 ) -> None:
     if not _AIOSQLITE:
         return
@@ -255,8 +354,9 @@ async def set_tactical_artifacts(
             """UPDATE tactical_sessions
                SET report_path = COALESCE(?, report_path),
                    tracking_path = COALESCE(?, tracking_path),
-                   metrics_path = COALESCE(?, metrics_path)
+                   metrics_path = COALESCE(?, metrics_path),
+                   events_path = COALESCE(?, events_path)
                WHERE id = ?""",
-            (report_path, tracking_path, metrics_path, session_id),
+            (report_path, tracking_path, metrics_path, events_path, session_id),
         )
         await db.commit()

@@ -286,7 +286,7 @@ def _hull(pts: np.ndarray) -> Optional[np.ndarray]:
 
 def _series_panel(ax, metrics: pd.DataFrame, column: str, teams: List[int],
                   title: str, ylabel: str, invert_note: str = "") -> None:
-    """One metric over match time, per team, lightly smoothed."""
+    """One metric over analysis elapsed time, per team, lightly smoothed."""
     for team in teams:
         sub = metrics[metrics["team"] == team].dropna(subset=[column])
         if sub.empty:
@@ -299,7 +299,7 @@ def _series_panel(ax, metrics: pd.DataFrame, column: str, teams: List[int],
                 alpha=0.22, zorder=2)
 
     ax.set_title(title, fontsize=9.5, color="#222", pad=6)
-    ax.set_xlabel("match time (s)", fontsize=7.5, color="#666")
+    ax.set_xlabel("analysis elapsed (s)", fontsize=7.5, color="#666")
     ax.set_ylabel(ylabel, fontsize=7.5, color="#666")
     ax.tick_params(labelsize=7, colors="#666")
     ax.grid(True, color="#E8E8E4", lw=0.7, zorder=0)
