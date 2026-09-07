@@ -42,7 +42,22 @@ class _FakePipeline:
         return {"ok": True, "paused": False}
 
 
-def test_tactical_start_reuses_loaded_pipeline(monkeypatch):
+def _install_test_video_root(monkeypatch, tmp_path):
+    """Give API tests an isolated media tree instead of relying on local footage."""
+    root = tmp_path / "project"
+    data_dir = root / "data"
+    uploads_dir = root / "uploads"
+    data_dir.mkdir(parents=True)
+    uploads_dir.mkdir()
+    video = data_dir / "sample.mp4"
+    video.write_bytes(b"test video placeholder")
+    monkeypatch.setattr(api, "ROOT", root)
+    monkeypatch.setattr(api, "TACTICAL_VIDEO_DIRS", (data_dir, uploads_dir))
+    return video
+
+
+def test_tactical_start_reuses_loaded_pipeline(monkeypatch, tmp_path):
+    _install_test_video_root(monkeypatch, tmp_path)
     pipeline = _FakePipeline(running=True)
     monkeypatch.setattr(api, "_tac", pipeline)
     async def create(*_args):
@@ -91,7 +106,8 @@ def test_tactical_start_rejects_ambiguous_source(monkeypatch):
     assert not pipeline.start_calls
 
 
-def test_video_listing_uses_project_relative_identifiers():
+def test_video_listing_uses_project_relative_identifiers(monkeypatch, tmp_path):
+    _install_test_video_root(monkeypatch, tmp_path)
     response = asyncio.run(api.tactical_videos())
     videos = _json(response)["videos"]
     assert videos
