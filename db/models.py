@@ -67,9 +67,14 @@ CREATE TABLE IF NOT EXISTS tactical_sessions (
     status          TEXT    NOT NULL DEFAULT 'running',
     error           TEXT,
     report_path     TEXT,
+    pdf_path        TEXT,
     tracking_path   TEXT,
     metrics_path    TEXT,
-    events_path     TEXT
+    events_path     TEXT,
+    annotated_path  TEXT,
+    export_status   TEXT,
+    export_progress REAL NOT NULL DEFAULT 0,
+    export_error    TEXT
 );
 """
 
@@ -107,8 +112,25 @@ CREATE TABLE IF NOT EXISTS tactical_events (
     y               REAL,
     detail_json     TEXT    NOT NULL,
     clip_path       TEXT,
+    review_status   TEXT    NOT NULL DEFAULT 'inferred',
+    notes           TEXT,
+    reviewed_at     REAL,
     created_at      REAL    NOT NULL,
     UNIQUE(session_id, event_seq)
+);
+"""
+
+CREATE_TACTICAL_PLAYER_LABELS = """
+CREATE TABLE IF NOT EXISTS tactical_player_labels (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES tactical_sessions(id) ON DELETE CASCADE,
+    track_id        INTEGER NOT NULL,
+    display_name    TEXT,
+    shirt_number    INTEGER,
+    team            INTEGER,
+    notes           TEXT,
+    updated_at      REAL NOT NULL,
+    UNIQUE(session_id, track_id)
 );
 """
 
@@ -120,4 +142,5 @@ ALL_TABLES = [
     CREATE_TACTICAL_SESSIONS,
     CREATE_TACTICAL_SNAPSHOTS,
     CREATE_TACTICAL_EVENTS,
+    CREATE_TACTICAL_PLAYER_LABELS,
 ]

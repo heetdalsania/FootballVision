@@ -48,7 +48,7 @@ class TacticalConfig:
     display_index: Optional[int] = None
     window_id: Optional[int] = None
 
-    loop_video: bool = True        # restart a video file when it ends
+    loop_video: bool = False       # full-match jobs finish cleanly at EOF
     snapshot_every: int = 15       # frames between retrieval snapshots
 
 
@@ -78,12 +78,20 @@ class TacticalPipeline:
         self._source_time_s: Optional[float] = None
         self._last_source_time_s: Optional[float] = None
         self._source_looped = False
+        self._source_eof = False
+        self._source_total_frames = 0
+        self._source_frame = 0
+        self._source_duration_s = 0.0
+        self._paused = False
+        self._analysis_frame_size: Optional[tuple[int, int]] = None
 
         self.frame_id = 0
         self.started_at = 0.0
         self._last_payload: Dict = {}
         self._last_players: List[Dict] = []
         self._last_error: Optional[str] = None
+        self._fatal_error: Optional[str] = None
+        self._last_snapshot_frame = 0
         self._fps_ema: float = 0.0
         # Optional async hooks let the web layer persist sessions without
         # coupling this reusable vision loop to SQLite or FastAPI.
@@ -101,9 +109,13 @@ class TacticalPipeline:
             return {"ok": False, "error": "Session already running"}
 
         self._last_error = None
+        self._fatal_error = None
         self._capture_error = None
+        self._source_eof = False
+        self._paused = False
         self._last_payload = {}
         self._last_players = []
+        self._last_snapshot_frame = 0
         self._fps_ema = 0.0
         loop = asyncio.get_event_loop()
         try:
@@ -116,19 +128,58 @@ class TacticalPipeline:
         self.started_at = time.time()
         self.frame_id = 0
         self._task = asyncio.create_task(self._run())
-        return {"ok": True, "source": self._source_label()}
+        return {
+            "ok": True,
+            "source": self._source_label(),
+            "duration_s": round(self._source_duration_s, 3) or None,
+            "total_frames": self._source_total_frames or None,
+        }
 
     async def stop(self) -> Dict:
         self._running = False
         if self._task:
-            self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+                # Let the in-flight inference finish before closing its video
+                # source. Cancelling a run_in_executor future does not stop the
+                # worker thread and could otherwise race source.release().
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=15)
+            except asyncio.TimeoutError:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
             self._task = None
         self._close_source()
         return {"ok": True, "frames": self.frame_id}
+
+    async def pause(self) -> Dict:
+        if not self._running:
+            return {"ok": False, "error": "No analysis is running"}
+        self._paused = True
+        return {"ok": True, "paused": True, "frame_id": self.frame_id}
+
+    async def resume(self) -> Dict:
+        if not self._running:
+            return {"ok": False, "error": "No analysis is running"}
+        self._paused = False
+        return {"ok": True, "paused": False, "frame_id": self.frame_id}
+
+    async def manual_calibrate(self, normalized_points: List[Dict]) -> Dict:
+        if not self._running or self._engine is None:
+            return {"ok": False, "error": "Start an analysis before calibrating"}
+        if self._analysis_frame_size is None:
+            return {"ok": False, "error": "Wait for the first video frame"}
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._executor,
+                self._engine.set_manual_calibration,
+                normalized_points,
+                self._analysis_frame_size,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     @property
     def is_running(self) -> bool:
@@ -162,6 +213,7 @@ class TacticalPipeline:
             self._source_time_s = None
             self._last_source_time_s = None
             self._source_looped = False
+            self._source_eof = False
         except Exception:
             self._close_source()
             raise
@@ -184,6 +236,12 @@ class TacticalPipeline:
             if not cap.isOpened():
                 raise FileNotFoundError(f"Could not open video: {cfg.video_path}")
             self._source = cap
+            self._source_total_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            fps = float(cap.get(cv2.CAP_PROP_FPS)) or 0.0
+            self._source_duration_s = (
+                self._source_total_frames / fps if fps > 0 else 0.0
+            )
+            self._source_frame = 0
             logger.info("Source: video file %s", cfg.video_path)
         else:
             from src.capture import ScreenCapture, has_screen_permission
@@ -212,6 +270,9 @@ class TacticalPipeline:
             )
             cap.start()
             self._source = cap
+            self._source_total_frames = 0
+            self._source_duration_s = 0.0
+            self._source_frame = 0
             logger.info("Source: screen capture")
 
     def _source_label(self) -> str:
@@ -235,7 +296,9 @@ class TacticalPipeline:
                     src.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ok, frame = src.read()
                 if not ok:
+                    self._source_eof = True
                     return None
+            self._source_frame = max(0, int(src.get(cv2.CAP_PROP_POS_FRAMES)))
             source_time = max(0.0, float(src.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0)
             self._source_looped = (
                 self._last_source_time_s is not None
@@ -273,10 +336,15 @@ class TacticalPipeline:
 
         try:
             while self._running:
+                if self._paused:
+                    await asyncio.sleep(0.1)
+                    continue
                 t0 = time.monotonic()
 
                 frame = await loop.run_in_executor(self._executor, self._read_frame)
                 if frame is None:
+                    if self._source_eof:
+                        break
                     await asyncio.sleep(0.05)
                     continue
 
@@ -313,6 +381,7 @@ class TacticalPipeline:
                     if snapshot_due:
                         try:
                             await self.snapshot_sink(payload)
+                            self._last_snapshot_frame = self.frame_id
                         except Exception:
                             logger.exception("Could not persist tactical snapshot")
                     if send_due and self._clients:
@@ -326,21 +395,39 @@ class TacticalPipeline:
         except Exception as exc:
             logger.exception("Tactical analysis stopped unexpectedly")
             self._last_error = f"Analysis stopped: {exc}"
+            self._fatal_error = self._last_error
             payload = {"type": "error", "error": self._last_error}
             self._last_payload = payload
             await self._broadcast(payload)
         finally:
             self._running = False
+            self._paused = False
+            if (self.snapshot_sink is not None and self._last_payload
+                    and self._last_snapshot_frame != self.frame_id):
+                try:
+                    await self.snapshot_sink(self._last_payload)
+                    self._last_snapshot_frame = int(
+                        self._last_payload.get("frame_id") or self.frame_id
+                    )
+                except Exception:
+                    logger.exception("Could not persist final tactical snapshot")
             self._close_source()
             if self.stopped_sink is not None:
                 try:
                     elapsed = max(0.0, time.time() - self.started_at)
-                    await self.stopped_sink(self.frame_id, elapsed, self._last_error)
+                    await self.stopped_sink(self.frame_id, elapsed, self._fatal_error)
                 except Exception:
                     logger.exception("Could not finalise tactical session")
+            if self._source_eof and not self._fatal_error:
+                await self._broadcast({
+                    "type": "complete",
+                    "frame_id": self.frame_id,
+                    "progress_pct": 100.0,
+                })
 
     def _analyze(self, frame: np.ndarray):
         """Blocking: run the engine and this project's analysis layers."""
+        self._analysis_frame_size = (int(frame.shape[1]), int(frame.shape[0]))
         result = self._engine.process(frame, annotate=True)
         self._last_error = None if result.source_status == "ok" else result.source_status
 
@@ -405,6 +492,10 @@ class TacticalPipeline:
                 "pitch_width": PITCH_WIDTH,
                 "calibrated": result.calibrated,
                 "n_keypoints": result.n_keypoints,
+                "calibration_mode": (
+                    "manual" if getattr(self._engine, "_manual_calibration", False)
+                    else "automatic"
+                ),
                 "players": players,
                 "ball": result.ball,
                 "counts": result.counts,
@@ -418,7 +509,14 @@ class TacticalPipeline:
             "timings_ms": result.timings_ms,
             "elapsed_s": round(time.time() - self.started_at, 1),
             "source_time_s": self._source_time_s,
+            "progress_pct": self._progress_percent(),
+            "source_duration_s": round(self._source_duration_s, 3) or None,
         }
+
+    def _progress_percent(self) -> Optional[float]:
+        if not self.config.video_path or self._source_total_frames <= 0:
+            return None
+        return round(min(100.0, 100.0 * self._source_frame / self._source_total_frames), 1)
 
     def _encode(self, frame: Optional[np.ndarray]) -> Optional[str]:
         if frame is None:
@@ -461,10 +559,14 @@ class TacticalPipeline:
     def stats(self) -> Dict:
         return {
             "running": self._running,
+            "paused": self._paused,
             "frame_id": self.frame_id,
             "fps": round(self._fps_ema, 1),
             "source": self._source_label() if self._running else None,
             "error": self._last_error,
             "elapsed_s": round(time.time() - self.started_at, 1) if self._running else 0,
             "events": len(self._intelligence.events) if self._intelligence else 0,
+            "progress_pct": self._progress_percent(),
+            "source_time_s": self._source_time_s,
+            "source_duration_s": round(self._source_duration_s, 3) or None,
         }

@@ -48,7 +48,14 @@ def percentile(values: list[float], pct: float) -> float:
     return float(ordered[index])
 
 
-def benchmark(video: Path, frames: int, stride: int, width: int, device: str) -> dict:
+def benchmark(
+    video: Path,
+    frames: int,
+    stride: int,
+    width: int,
+    device: str,
+    engine=None,
+) -> dict:
     import cv2
     from src.fv_engine import FootballEngine
     from src.match_intelligence import MatchIntelligence
@@ -56,8 +63,11 @@ def benchmark(video: Path, frames: int, stride: int, width: int, device: str) ->
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise RuntimeError(f"could not open {video}")
-    engine = FootballEngine(device=device, player_imgsz=width, team_backend="local")
-    engine.load()
+    if engine is None:
+        engine = FootballEngine(device=device, player_imgsz=width, team_backend="local")
+        engine.load()
+    else:
+        engine.reset_session()
     intelligence = MatchIntelligence()
 
     timings, people_counts = [], []

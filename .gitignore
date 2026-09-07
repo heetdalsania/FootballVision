@@ -20,6 +20,9 @@ clips/
 captures/
 uploads/
 analysis/
+dist/
+output/
+tmp/
 data/*.mp4
 *.duckdb
 *.db

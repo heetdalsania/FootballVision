@@ -21,6 +21,7 @@ class _FakePipeline:
         self.config = None
         self.stop_calls = 0
         self.start_calls = 0
+        self.paused = False
 
     async def stop(self):
         self.stop_calls += 1
@@ -31,6 +32,14 @@ class _FakePipeline:
         self.start_calls += 1
         self.is_running = True
         return {"ok": True, "source": "test"}
+
+    async def pause(self):
+        self.paused = True
+        return {"ok": True, "paused": True}
+
+    async def resume(self):
+        self.paused = False
+        return {"ok": True, "paused": False}
 
 
 def test_tactical_start_reuses_loaded_pipeline(monkeypatch):
@@ -51,6 +60,7 @@ def test_tactical_start_reuses_loaded_pipeline(monkeypatch):
     assert api._tac is pipeline
     assert pipeline.stop_calls == 1 and pipeline.start_calls == 1
     assert pipeline.config.target_fps == 15
+    assert pipeline.config.loop_video is False
     assert Path(pipeline.config.video_path).name == "sample.mp4"
 
 
@@ -174,3 +184,54 @@ def test_analysis_failure_is_broadcast_and_cleans_up(monkeypatch):
         "type": "error",
         "error": "Analysis stopped: synthetic inference failure",
     }
+
+
+def test_video_eof_finalises_and_broadcasts_completion(monkeypatch):
+    class Source:
+        released = False
+
+        def release(self):
+            self.released = True
+
+    class Client:
+        def __init__(self):
+            self.messages = []
+
+        async def send_text(self, message):
+            self.messages.append(json.loads(message))
+
+    async def run():
+        pipeline = TacticalPipeline()
+        pipeline.config.video_path = "sample.mp4"
+        pipeline._source = Source()
+        pipeline._running = True
+        client = Client()
+        pipeline.add_client(client)
+        finalised = []
+
+        def eof():
+            pipeline._source_eof = True
+            return None
+
+        async def finish(frames, elapsed, error):
+            finalised.append((frames, elapsed, error))
+
+        monkeypatch.setattr(pipeline, "_read_frame", eof)
+        pipeline.stopped_sink = finish
+        await pipeline._run()
+        return pipeline, client, finalised
+
+    pipeline, client, finalised = asyncio.run(run())
+    assert not pipeline.is_running
+    assert finalised and finalised[0][2] is None
+    assert client.messages[-1]["type"] == "complete"
+    assert client.messages[-1]["progress_pct"] == 100.0
+
+
+def test_pause_and_resume_endpoints(monkeypatch):
+    pipeline = _FakePipeline(running=True)
+    monkeypatch.setattr(api, "_tac", pipeline)
+    paused = _json(asyncio.run(api.tactical_pause()))
+    resumed = _json(asyncio.run(api.tactical_resume()))
+    assert paused["paused"] is True
+    assert resumed["paused"] is False

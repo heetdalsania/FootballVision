@@ -41,18 +41,42 @@ python main.py
 
 Open <http://localhost:8000>. Choose a video, window, or display from **Start
 Analysis**. A video file is the most reproducible way to verify the pipeline.
-Sessions and sampled pitch states are saved in local SQLite history. From the
-dashboard, **Build exports** creates tracking, metrics, and event CSV files,
-plus a visual match report whenever the session contains resolved team data.
+Sessions and sampled pitch states are saved in local SQLite history. Video jobs
+finish automatically at the end of the file and expose pause, resume, progress,
+and stop controls. **Build exports** creates tracking, metrics, and reviewed
+event CSV files, a dataset-ready JSON export, a visual PNG report, and a
+printable two-page PDF whenever the session contains resolved team data.
 
 On macOS, after setup you can also double-click `FootballVision.command`; it
 starts the local server and opens the dashboard in your browser.
+
+To check a machine or build a Finder-launchable app bundle:
+
+```bash
+./scripts/diagnose.py
+./scripts/build_macos_app.sh
+open dist/FootballVision.app
+```
+
+The app bundle is a lightweight launcher for this checkout and its `.venv`; it
+does not embed Python, model weights, or match footage.
 
 The **Match intelligence** card estimates possession, match phase, team
 direction, and formation from repeated frames. Confirmed changes populate the
 event timeline as passes, turnovers, carries, restarts, and conservative shot
 candidates. Stop a session to scrub its saved pitch states, jump from an event
-to the nearest state, or create a six-second local MP4 event clip.
+to the nearest state, or create a six-second local MP4 event clip. In history
+you can confirm, reject, rename, and annotate inferred events; label tracked
+players with names and shirt numbers; compare any two sessions; and inspect
+possession samples, control, compactness, final-third presence, heatmaps,
+formations, pass networks, and a local dominance timeline.
+
+Use **Correct pitch** to replace an uncertain automatic calibration by clicking
+the four visible pitch corners. The ball tracker smooths detections and bridges
+short missed-detection gaps. **Overlay video** renders the saved pitch state,
+team shape, possession, player labels, and accepted events over the source
+footage. This local OpenCV export is intentionally silent; it does not preserve
+the source audio track.
 
 Useful options:
 
@@ -79,8 +103,9 @@ python -m pip install -r requirements-dev.txt
 ```
 
 The test suite covers geometry, team assignment, tactical metrics, situation
-retrieval, report rendering, API source validation, and pipeline lifecycle
-failures. Benchmarks and their measured outputs live in `benchmarks/`.
+retrieval, report rendering, analytics, event review, annotated-video export,
+API source validation, and pipeline lifecycle failures. Benchmarks and their
+measured outputs live in `benchmarks/`.
 
 Run the real golden-video regression locally (about 15–30 seconds on a modern
 machine):
@@ -90,6 +115,17 @@ python scripts/golden_video_benchmark.py
 # or include it in the complete gate
 RUN_GOLDEN=1 ./scripts/quality_gate.sh
 ```
+
+For a broader local reliability check, place several short clips with different
+lighting, camera motion, resolution, and occlusion in `data/reliability/`, then
+run:
+
+```bash
+python scripts/video_reliability_suite.py
+```
+
+It reuses one loaded model set across every clip and writes a per-video JSON
+result to `benchmarks/video_suite_latest.json`.
 
 The benchmark fails if football recognition, calibration, people recall,
 projection, team resolution/stability, or latency crosses the checked-in
@@ -104,14 +140,18 @@ weights are intentionally not committed.
 | `ui/api.py` | FastAPI pages, REST endpoints, and WebSockets |
 | `src/tactical_pipeline.py` | Source lifecycle and real-time analysis loop |
 | `src/fv_engine.py` | Detection, tracking, team classification, calibration |
+| `src/ball_tracking.py` | Smoothed ball motion and short-gap recovery |
 | `src/tactical_metrics.py` | Shape, compactness, pressing, and pitch control |
 | `src/match_intelligence.py` | Temporal possession, events, phases, direction, and formations |
+| `src/session_analytics.py` | Heatmaps, comparisons, pass networks, and aggregate session metrics |
 | `src/state_embedding.py` | Similar-situation indexing and retrieval |
 | `src/event_clip.py` | Local event-centered MP4 clip export |
+| `src/annotated_video.py` | Local tactical-overlay MP4 export |
 | `src/capture.py` | macOS display/window capture |
 | `src/match_report.py` | Static post-match analyst report |
-| `src/session_report.py` | Report/CSV generation from saved live sessions |
-| `db/session.py` | SQLite sessions, snapshots, and artifact metadata |
+| `src/pdf_report.py` | Printable two-page post-match PDF |
+| `src/session_report.py` | Report, CSV, and PDF generation from saved sessions |
+| `db/session.py` | SQLite sessions, snapshots, events, labels, and artifact metadata |
 
 `src/pipeline.py` and the `/coach` and `/fan` pages are the earlier NFL-oriented
 prototype. The root route intentionally opens the football tactical product.

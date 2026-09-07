@@ -34,6 +34,24 @@ async def init_db():
         columns = {row[1] for row in await cur.fetchall()}
         if "events_path" not in columns:
             await db.execute("ALTER TABLE tactical_sessions ADD COLUMN events_path TEXT")
+        if "annotated_path" not in columns:
+            await db.execute("ALTER TABLE tactical_sessions ADD COLUMN annotated_path TEXT")
+        if "pdf_path" not in columns:
+            await db.execute("ALTER TABLE tactical_sessions ADD COLUMN pdf_path TEXT")
+        if "export_status" not in columns:
+            await db.execute("ALTER TABLE tactical_sessions ADD COLUMN export_status TEXT")
+        if "export_progress" not in columns:
+            await db.execute(
+                "ALTER TABLE tactical_sessions ADD COLUMN export_progress REAL NOT NULL DEFAULT 0"
+            )
+        if "export_error" not in columns:
+            await db.execute("ALTER TABLE tactical_sessions ADD COLUMN export_error TEXT")
+        await db.execute(
+            """UPDATE tactical_sessions
+               SET export_status = 'interrupted',
+                   export_error = COALESCE(export_error, 'App stopped during export')
+               WHERE export_status = 'running'"""
+        )
         cur = await db.execute("PRAGMA table_info(tactical_snapshots)")
         snapshot_columns = {row[1] for row in await cur.fetchall()}
         if "intelligence_json" not in snapshot_columns:
@@ -44,6 +62,16 @@ async def init_db():
             await db.execute(
                 "ALTER TABLE tactical_snapshots ADD COLUMN source_time_s REAL"
             )
+        cur = await db.execute("PRAGMA table_info(tactical_events)")
+        event_columns = {row[1] for row in await cur.fetchall()}
+        if "review_status" not in event_columns:
+            await db.execute(
+                "ALTER TABLE tactical_events ADD COLUMN review_status TEXT NOT NULL DEFAULT 'inferred'"
+            )
+        if "notes" not in event_columns:
+            await db.execute("ALTER TABLE tactical_events ADD COLUMN notes TEXT")
+        if "reviewed_at" not in event_columns:
+            await db.execute("ALTER TABLE tactical_events ADD COLUMN reviewed_at REAL")
         # A process can be killed without running the lifespan shutdown hook.
         # Do not leave those sessions looking live forever on the next launch.
         await db.execute(
@@ -306,7 +334,8 @@ async def get_tactical_events(session_id: int) -> list[dict]:
         cur = await db.execute(
             """SELECT id, event_seq, frame_id, time_s, source_time_s,
                       event_type AS type, label, team, player_id, confidence,
-                      x, y, detail_json, clip_path
+                      x, y, detail_json, clip_path, review_status, notes,
+                      reviewed_at
                FROM tactical_events WHERE session_id = ?
                ORDER BY event_seq""",
             (session_id,),
@@ -340,12 +369,91 @@ async def set_tactical_event_clip(session_id: int, event_id: int, clip_path: str
         await db.commit()
 
 
+async def update_tactical_event(
+    session_id: int,
+    event_id: int,
+    changes: dict,
+) -> Optional[dict]:
+    """Apply a reviewed event correction using an explicit field whitelist."""
+    if not _AIOSQLITE:
+        return None
+    columns = {
+        "type": "event_type",
+        "label": "label",
+        "team": "team",
+        "player_id": "player_id",
+        "source_time_s": "source_time_s",
+        "review_status": "review_status",
+        "notes": "notes",
+    }
+    selected = [(columns[key], value) for key, value in changes.items() if key in columns]
+    if not selected:
+        return await get_tactical_event(session_id, event_id)
+    assignments = ", ".join(f"{column} = ?" for column, _ in selected)
+    values = [value for _, value in selected]
+    values.extend([time.time(), session_id, event_id])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            f"""UPDATE tactical_events SET {assignments}, reviewed_at = ?
+                WHERE session_id = ? AND id = ?""",
+            values,
+        )
+        await db.commit()
+    return await get_tactical_event(session_id, event_id)
+
+
+async def get_tactical_player_labels(session_id: int) -> list[dict]:
+    if not _AIOSQLITE:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """SELECT track_id, display_name, shirt_number, team, notes, updated_at
+               FROM tactical_player_labels WHERE session_id = ? ORDER BY track_id""",
+            (session_id,),
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def set_tactical_player_label(
+    session_id: int,
+    track_id: int,
+    display_name: Optional[str] = None,
+    shirt_number: Optional[int] = None,
+    team: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """Create or replace one analyst-owned player label."""
+    if not _AIOSQLITE:
+        return {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO tactical_player_labels
+               (session_id, track_id, display_name, shirt_number, team, notes, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, track_id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 shirt_number = excluded.shirt_number,
+                 team = excluded.team,
+                 notes = excluded.notes,
+                 updated_at = excluded.updated_at""",
+            (
+                session_id, track_id, display_name, shirt_number, team, notes,
+                time.time(),
+            ),
+        )
+        await db.commit()
+    labels = await get_tactical_player_labels(session_id)
+    return next(label for label in labels if label["track_id"] == track_id)
+
+
 async def set_tactical_artifacts(
     session_id: int,
     report_path: Optional[str] = None,
     tracking_path: Optional[str] = None,
     metrics_path: Optional[str] = None,
     events_path: Optional[str] = None,
+    pdf_path: Optional[str] = None,
 ) -> None:
     if not _AIOSQLITE:
         return
@@ -355,8 +463,33 @@ async def set_tactical_artifacts(
                SET report_path = COALESCE(?, report_path),
                    tracking_path = COALESCE(?, tracking_path),
                    metrics_path = COALESCE(?, metrics_path),
-                   events_path = COALESCE(?, events_path)
+                   events_path = COALESCE(?, events_path),
+                   pdf_path = COALESCE(?, pdf_path)
                WHERE id = ?""",
-            (report_path, tracking_path, metrics_path, events_path, session_id),
+            (
+                report_path, tracking_path, metrics_path, events_path,
+                pdf_path, session_id,
+            ),
+        )
+        await db.commit()
+
+
+async def set_tactical_video_export(
+    session_id: int,
+    status: str,
+    progress: float = 0,
+    annotated_path: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    if not _AIOSQLITE:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE tactical_sessions
+               SET export_status = ?, export_progress = ?,
+                   annotated_path = COALESCE(?, annotated_path),
+                   export_error = ?
+               WHERE id = ?""",
+            (status, max(0, min(100, float(progress))), annotated_path, error, session_id),
         )
         await db.commit()

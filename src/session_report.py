@@ -64,7 +64,7 @@ def build_session_artifacts(
     session_id: int,
     source_name: str,
 ) -> dict:
-    """Write tracking CSV, metrics CSV and (when possible) a report PNG."""
+    """Write CSV data plus PNG and printable PDF reports when possible."""
     from src.match_report import render
 
     output_dir = Path(output_dir)
@@ -78,6 +78,7 @@ def build_session_artifacts(
     metrics_path = output_dir / f"{stem}-metrics.csv"
     events_path = output_dir / f"{stem}-events.csv"
     report_path = output_dir / f"{stem}-report.png"
+    pdf_path = output_dir / f"{stem}-report.pdf"
     tracking.to_csv(tracking_path, index=False)
     metrics.to_csv(metrics_path, index=False)
     event_rows = []
@@ -95,17 +96,24 @@ def build_session_artifacts(
             "y": event.get("y"),
             "detail": json.dumps(event.get("detail") or {}, separators=(",", ":")),
             "clip_path": event.get("clip_path"),
+            "review_status": event.get("review_status") or "inferred",
+            "notes": event.get("notes"),
         })
     pd.DataFrame(event_rows, columns=[
         "time_s", "source_time_s", "frame_id", "type", "label", "team",
         "player_id", "confidence", "x", "y", "detail", "clip_path",
+        "review_status", "notes",
     ]).to_csv(events_path, index=False)
 
     resolved = tracking[(tracking["role"] == "player") & tracking["team"].isin([0, 1])]
     if resolved.empty or metrics.empty:
         report = None
+        pdf_report = None
     else:
-        counts = pd.Series([e.get("type") for e in events]).value_counts()
+        reviewed_events = [
+            event for event in events if event.get("review_status") != "rejected"
+        ]
+        counts = pd.Series([e.get("type") for e in reviewed_events]).value_counts()
         labels = {
             "possession_start": ("possession start", "possession starts"),
             "pass": ("pass", "passes"),
@@ -127,12 +135,17 @@ def build_session_artifacts(
                       f"{len(snapshots)} sampled moments · {summary}"),
         )
         report = str(report_path)
+        from src.pdf_report import build_pdf_report
+        pdf_report = build_pdf_report(
+            report_path, pdf_path, snapshots, events, source_name, session_id
+        )
 
     return {
         "tracking": str(tracking_path),
         "metrics": str(metrics_path),
         "events": str(events_path),
         "report": report,
+        "pdf": pdf_report,
         "tracking_rows": len(tracking),
         "metric_rows": len(metrics),
     }

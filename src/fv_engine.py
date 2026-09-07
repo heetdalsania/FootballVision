@@ -33,6 +33,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from src.ball_tracking import BallMotionTracker
+
 logger = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -219,11 +221,14 @@ class FootballEngine:
         # tracker_id -> recent pitch x in metres, for the goalkeeper tie-break.
         self._track_x: Dict[int, deque] = {}
         self._smoothed_positions: Dict[int, Tuple[float, float]] = {}
-        self._last_ball: Optional[Tuple[float, float]] = None
-        self._last_ball_frame: int = 0
+        self._ball_motion = BallMotionTracker(
+            max_age_frames=BALL_HOLD_FRAMES,
+            smoothing=BALL_SMOOTHING_ALPHA,
+        )
         # Homography reused between calibration frames.
         self._transformer = None
         self._n_keypoints = 0
+        self._manual_calibration = False
 
     # ------------------------------------------------------------------
     def load(self) -> None:
@@ -286,10 +291,10 @@ class FootballEngine:
         self._role_votes = {}
         self._track_x = {}
         self._smoothed_positions = {}
-        self._last_ball = None
-        self._last_ball_frame = 0
+        self._ball_motion.reset()
         self._transformer = None
         self._n_keypoints = 0
+        self._manual_calibration = False
         if self.team_backend == "local":
             self._team_classifier = None
 
@@ -397,23 +402,9 @@ class FootballEngine:
                 pt = transformer.transform_points(bxy[:1].astype(np.float32))
                 if len(pt):
                     raw = (float(pt[0][0]) / 100.0, float(pt[0][1]) / 100.0)
-                    self._last_ball = smooth_point(
-                        self._last_ball, raw, BALL_SMOOTHING_ALPHA
-                    )
-                    self._last_ball_frame = self._frame_id
-                    res.ball = {
-                        "x": round(self._last_ball[0], 2),
-                        "y": round(self._last_ball[1], 2),
-                        "stale": False,
-                    }
-            if (res.ball is None and self._last_ball is not None
-                    and self._frame_id - self._last_ball_frame <= BALL_HOLD_FRAMES):
-                res.ball = {
-                    "x": round(self._last_ball[0], 2),
-                    "y": round(self._last_ball[1], 2),
-                    "stale": True,
-                    "age_frames": self._frame_id - self._last_ball_frame,
-                }
+                    res.ball = self._ball_motion.observe(raw, self._frame_id)
+            if res.ball is None:
+                res.ball = self._ball_motion.predict(self._frame_id)
 
         if annotate:
             res.annotated = self._annotate(
@@ -562,6 +553,8 @@ class FootballEngine:
         from sports.common.view import ViewTransformer
 
         self._solved_this_frame = False
+        if self._manual_calibration and self._transformer is not None:
+            return self._transformer, self._n_keypoints
         due = (self._frame_id % self.calibrate_every == 0
                or self._transformer is None)
         if not due:
@@ -596,6 +589,44 @@ class FootballEngine:
             return _keep()
         self._solved_this_frame = True
         return self._transformer, self._n_keypoints
+
+    def set_manual_calibration(
+        self,
+        normalized_points: List[Dict[str, float]],
+        frame_size: Tuple[int, int],
+    ) -> Dict:
+        """Lock a four-corner image-to-pitch transform for this session."""
+        if len(normalized_points) != 4:
+            raise ValueError("Select exactly four pitch corners")
+        width, height = frame_size
+        source = []
+        for point in normalized_points:
+            x, y = float(point["x"]), float(point["y"])
+            if not 0 <= x <= 1 or not 0 <= y <= 1:
+                raise ValueError("Calibration points must lie inside the video")
+            source.append([x * width, y * height])
+        # UI order: near-left, near-right, far-right, far-left.
+        target = np.asarray([
+            [0, 0], [10500, 0], [10500, 6800], [0, 6800],
+        ], dtype=np.float32)
+        from sports.common.view import ViewTransformer
+        transformer = ViewTransformer(
+            source=np.asarray(source, dtype=np.float32),
+            target=target,
+        )
+        projected = transformer.transform_points(np.asarray(source, dtype=np.float32))
+        error_cm = float(np.linalg.norm(projected - target, axis=1).mean())
+        self._transformer = transformer
+        self._n_keypoints = 4
+        self._manual_calibration = True
+        self._smoothed_positions = {}
+        self._ball_motion.reset()
+        return {
+            "ok": True,
+            "mode": "manual",
+            "points": 4,
+            "reprojection_error_m": round(error_cm / 100.0, 4),
+        }
 
     # ------------------------------------------------------------------
     def _project(self, transformer, players, goalkeepers, referees, team_ids

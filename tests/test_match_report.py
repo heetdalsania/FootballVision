@@ -22,6 +22,7 @@ from src.match_report import (  # noqa: E402
     _teams_present,
     render,
 )
+from src.pdf_report import build_pdf_report  # noqa: E402
 
 
 def _tracking(n_frames=40, tracks_per_team=11, seed=0):
@@ -95,6 +96,41 @@ def test_render_writes_a_png():
         assert os.path.exists(out)
         # A real multi-panel figure is not a few hundred bytes.
         assert os.path.getsize(out) > 50_000
+
+
+def test_printable_pdf_report_has_two_pages():
+    tracking, metrics = _tracking(), _metrics()
+    with tempfile.TemporaryDirectory() as td:
+        png = os.path.join(td, "report.png")
+        pdf = os.path.join(td, "report.pdf")
+        render(tracking, metrics, png, title="Test", subtitle="synthetic")
+        snapshots = [{
+            "time_s": 1,
+            "source_time_s": 1,
+            "players": [
+                {"id": 1, "team": 0, "role": "player", "x": 30, "y": 20},
+                {"id": 2, "team": 1, "role": "player", "x": 70, "y": 40},
+            ],
+            "concepts": {
+                "control": {"0": 55, "1": 45},
+                "teams": {"0": {}, "1": {}},
+            },
+            "intelligence": {
+                "possession": {"team": 0},
+                "phase": {"label": "progression"},
+                "formations": {
+                    "0": {"name": "4-4-2"}, "1": {"name": "4-3-3"},
+                },
+            },
+        }]
+        result = build_pdf_report(
+            png, pdf, snapshots,
+            [{"type": "pass", "team": 0, "x": 50, "y": 30}],
+            "sample.mp4", 7,
+        )
+        assert result == pdf
+        assert open(pdf, "rb").read(4) == b"%PDF"
+        assert os.path.getsize(pdf) > 20_000
 
 
 def test_render_raises_when_no_team_is_resolved():

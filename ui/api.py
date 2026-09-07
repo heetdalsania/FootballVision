@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 import uuid
@@ -43,6 +44,7 @@ from db.session import (
     finish_tactical_session,
     get_tactical_event,
     get_tactical_events,
+    get_tactical_player_labels,
     get_tactical_session,
     get_tactical_snapshots,
     init_db,
@@ -54,6 +56,9 @@ from db.session import (
     save_tactical_events,
     set_tactical_event_clip,
     set_tactical_artifacts,
+    set_tactical_player_label,
+    set_tactical_video_export,
+    update_tactical_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +109,8 @@ _tac: TacticalPipeline = TacticalPipeline()
 _game_id: int = 0
 _session_start: float = 0.0
 _tactical_session_id: int = 0
+_video_exports: dict[int, dict] = {}
+_video_export_tasks: dict[int, object] = {}
 
 # ---------------------------------------------------------------------------
 # Page routes
@@ -145,6 +152,47 @@ async def fan_page(request: Request):
 @app.get("/tactical", response_class=HTMLResponse)
 async def tactical_page(request: Request):
     return templates.TemplateResponse(request=request, name="tactical.html")
+
+
+@app.get("/tactical/health")
+async def tactical_health():
+    """Local readiness report without loading the heavyweight models."""
+    weight_names = (
+        "football-ball-detection.pt",
+        "football-player-detection.pt",
+        "football-pitch-detection.pt",
+    )
+    weights = {
+        name: {
+            "present": (ROOT / "weights" / name).is_file(),
+            "size_mb": (
+                round((ROOT / "weights" / name).stat().st_size / 1e6, 1)
+                if (ROOT / "weights" / name).is_file() else 0
+            ),
+        }
+        for name in weight_names
+    }
+    folders = {}
+    for name in ("uploads", "analysis", "clips"):
+        path = ROOT / name
+        try:
+            path.mkdir(exist_ok=True)
+            probe = path / ".footballvision-write-test"
+            probe.touch()
+            probe.unlink()
+            folders[name] = True
+        except OSError:
+            folders[name] = False
+    ready = all(item["present"] for item in weights.values()) and all(folders.values())
+    return JSONResponse({
+        "ready": ready,
+        "python": sys.version.split()[0],
+        "weights": weights,
+        "folders_writable": folders,
+        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "free_gb": round(shutil.disk_usage(ROOT).free / 1e9, 1),
+        "signup_required": False,
+    })
 
 # ---------------------------------------------------------------------------
 # Session control
@@ -351,6 +399,11 @@ class TacticalStartRequest(BaseModel):
     display_index: Optional[int] = None
     window_id: Optional[int] = None
     target_fps: int = 6
+    loop_video: bool = False
+
+
+class TacticalCalibrationRequest(BaseModel):
+    points: list[dict]
 
 
 def _resolve_tactical_video(video_path: str) -> Path:
@@ -401,6 +454,7 @@ async def tactical_start(body: TacticalStartRequest):
         display_index=body.display_index,
         window_id=body.window_id,
         target_fps=max(1, min(body.target_fps, 15)),
+        loop_video=body.loop_video,
     )
     # Keep the pipeline instance so its loaded ML engine can be reused when a
     # user stops and starts another source. Reloading all three models made a
@@ -442,6 +496,24 @@ async def tactical_stop():
     result = await _tac.stop()
     result["session_id"] = _tactical_session_id
     return JSONResponse(result)
+
+
+@app.post("/tactical/pause")
+async def tactical_pause():
+    result = await _tac.pause()
+    return JSONResponse(result, status_code=200 if result.get("ok") else 409)
+
+
+@app.post("/tactical/resume")
+async def tactical_resume():
+    result = await _tac.resume()
+    return JSONResponse(result, status_code=200 if result.get("ok") else 409)
+
+
+@app.post("/tactical/calibrate")
+async def tactical_calibrate(body: TacticalCalibrationRequest):
+    result = await _tac.manual_calibrate(body.points)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 409)
 
 @app.get("/tactical/stats")
 async def tactical_stats():
@@ -539,7 +611,48 @@ async def tactical_session_detail(session_id: int):
     for event in events:
         if event.get("clip_path"):
             event["clip_url"] = "/" + event["clip_path"].lstrip("/")
-    return JSONResponse({"session": session, "snapshots": snapshots, "events": events})
+    from src.session_analytics import build_session_analytics
+    analytics = build_session_analytics(snapshots, events)
+    player_labels = await get_tactical_player_labels(session_id)
+    return JSONResponse({
+        "session": session,
+        "snapshots": snapshots,
+        "events": events,
+        "analytics": analytics,
+        "player_labels": player_labels,
+    })
+
+
+@app.get("/tactical/sessions/{session_id}/analytics")
+async def tactical_session_analytics(session_id: int):
+    session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from src.session_analytics import build_session_analytics
+    analytics = build_session_analytics(
+        await get_tactical_snapshots(session_id),
+        await get_tactical_events(session_id),
+    )
+    return JSONResponse({"session": session, "analytics": analytics})
+
+
+@app.get("/tactical/compare")
+async def tactical_compare(session_a: int, session_b: int):
+    first, second = await get_tactical_session(session_a), await get_tactical_session(session_b)
+    if not first or not second:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from src.session_analytics import build_session_analytics, compare_session_analytics
+    first_analytics = build_session_analytics(
+        await get_tactical_snapshots(session_a), await get_tactical_events(session_a)
+    )
+    second_analytics = build_session_analytics(
+        await get_tactical_snapshots(session_b), await get_tactical_events(session_b)
+    )
+    return JSONResponse({
+        "first": {"session": first, "analytics": first_analytics},
+        "second": {"session": second, "analytics": second_analytics},
+        "comparison": compare_session_analytics(first_analytics, second_analytics),
+    })
 
 
 @app.post("/tactical/sessions/{session_id}/events/{event_id}/clip")
@@ -579,6 +692,84 @@ async def tactical_event_clip(session_id: int, event_id: int):
     return JSONResponse({"ok": True, "clip_url": f"/clips/{filename}"})
 
 
+class TacticalEventUpdateRequest(BaseModel):
+    type: Optional[str] = None
+    label: Optional[str] = None
+    team: Optional[int] = None
+    player_id: Optional[int] = None
+    source_time_s: Optional[float] = None
+    review_status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class TacticalPlayerLabelRequest(BaseModel):
+    display_name: Optional[str] = None
+    shirt_number: Optional[int] = None
+    team: Optional[int] = None
+    notes: Optional[str] = None
+
+
+@app.put("/tactical/sessions/{session_id}/players/{track_id}")
+async def tactical_set_player_label(
+    session_id: int,
+    track_id: int,
+    body: TacticalPlayerLabelRequest,
+):
+    if not await get_tactical_session(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    if track_id < 0:
+        return JSONResponse({"ok": False, "error": "Invalid track ID"}, status_code=400)
+    if body.team not in (None, 0, 1):
+        return JSONResponse({"ok": False, "error": "Invalid team"}, status_code=400)
+    if body.shirt_number is not None and not 0 <= body.shirt_number <= 99:
+        return JSONResponse({"ok": False, "error": "Shirt number must be 0–99"}, status_code=400)
+    name = (body.display_name or "").strip() or None
+    notes = (body.notes or "").strip() or None
+    if name and len(name) > 60:
+        return JSONResponse({"ok": False, "error": "Player name is too long"}, status_code=400)
+    label = await set_tactical_player_label(
+        session_id, track_id, name, body.shirt_number, body.team, notes
+    )
+    return JSONResponse({"ok": True, "player": label})
+
+
+@app.patch("/tactical/sessions/{session_id}/events/{event_id}")
+async def tactical_update_event(
+    session_id: int,
+    event_id: int,
+    body: TacticalEventUpdateRequest,
+):
+    event_types = {
+        "possession_start", "pass", "turnover", "carry", "restart",
+        "shot_candidate",
+    }
+    if body.type is not None and body.type not in event_types:
+        return JSONResponse({"ok": False, "error": "Invalid event type"}, status_code=400)
+    if body.label is not None and not body.label.strip():
+        return JSONResponse({"ok": False, "error": "Event label cannot be empty"}, status_code=400)
+    if body.label is not None and len(body.label) > 80:
+        return JSONResponse({"ok": False, "error": "Event label is too long"}, status_code=400)
+    if body.notes is not None and len(body.notes) > 1000:
+        return JSONResponse({"ok": False, "error": "Event note is too long"}, status_code=400)
+    if body.review_status not in (None, "inferred", "confirmed", "rejected"):
+        return JSONResponse({"ok": False, "error": "Invalid review status"}, status_code=400)
+    if body.team not in (None, 0, 1):
+        return JSONResponse({"ok": False, "error": "Team must be A, B, or unset"}, status_code=400)
+    if body.source_time_s is not None and body.source_time_s < 0:
+        return JSONResponse({"ok": False, "error": "Event time cannot be negative"}, status_code=400)
+    changes = body.model_dump(exclude_unset=True)
+    if changes.get("label") is not None:
+        changes["label"] = changes["label"].strip()
+    if changes.get("notes") is not None:
+        changes["notes"] = changes["notes"].strip()
+    event = await update_tactical_event(session_id, event_id, changes)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if event.get("clip_path"):
+        event["clip_url"] = "/" + event["clip_path"].lstrip("/")
+    return JSONResponse({"ok": True, "event": event})
+
+
 @app.post("/tactical/sessions/{session_id}/artifacts")
 async def tactical_build_artifacts(session_id: int):
     session = await get_tactical_session(session_id)
@@ -610,13 +801,16 @@ async def tactical_build_artifacts(session_id: int):
         tracking_path=rel(result["tracking"]),
         metrics_path=rel(result["metrics"]),
         events_path=rel(result["events"]),
+        pdf_path=rel(result["pdf"]),
     )
     downloads = {
         kind: f"/tactical/sessions/{session_id}/download/{kind}"
-        for kind in ("tracking", "metrics", "events")
+        for kind in ("tracking", "metrics", "events", "dataset")
     }
     if result["report"]:
         downloads["report"] = f"/tactical/sessions/{session_id}/download/report"
+    if result["pdf"]:
+        downloads["pdf"] = f"/tactical/sessions/{session_id}/download/pdf"
     return JSONResponse({
         "ok": True,
         "report_available": bool(result["report"]),
@@ -626,11 +820,126 @@ async def tactical_build_artifacts(session_id: int):
     })
 
 
+@app.post("/tactical/sessions/{session_id}/annotated-video")
+async def tactical_build_annotated_video(session_id: int):
+    """Start a local background export with the measured tactical inset."""
+    session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.get("source_type") != "video" or not session.get("source_path"):
+        return JSONResponse(
+            {"ok": False, "error": "Annotated export requires a video-file session"},
+            status_code=409,
+        )
+    active = _video_exports.get(session_id) or {}
+    if active.get("status") == "running":
+        return JSONResponse({"ok": True, **active})
+    snapshots = await get_tactical_snapshots(session_id)
+    if not snapshots:
+        return JSONResponse(
+            {"ok": False, "error": "This session has no saved pitch states"},
+            status_code=409,
+        )
+    events = await get_tactical_events(session_id)
+    labels = await get_tactical_player_labels(session_id)
+    try:
+        source = _resolve_tactical_video(session["source_path"])
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    output = ANALYSIS_DIR / f"session-{session_id}-annotated.mp4"
+    state = {"status": "running", "progress": 0.0, "error": None}
+    _video_exports[session_id] = state
+    await set_tactical_video_export(session_id, "running", 0, error=None)
+
+    async def run_export():
+        import asyncio
+        from src.annotated_video import build_annotated_video
+
+        def progress(value):
+            state["progress"] = float(value)
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                build_annotated_video,
+                source,
+                output,
+                snapshots,
+                events,
+                labels,
+                progress,
+            )
+            relative = str(output.resolve().relative_to(ROOT))
+            state.update({
+                "status": "complete", "progress": 100.0, "error": None,
+                "download": f"/tactical/sessions/{session_id}/download/annotated",
+            })
+            await set_tactical_video_export(
+                session_id, "complete", 100, annotated_path=relative, error=None
+            )
+        except Exception as exc:
+            logger.exception("Annotated video export failed")
+            state.update({"status": "failed", "error": str(exc)})
+            await set_tactical_video_export(
+                session_id, "failed", state.get("progress", 0), error=str(exc)
+            )
+        finally:
+            _video_export_tasks.pop(session_id, None)
+
+    import asyncio
+    _video_export_tasks[session_id] = asyncio.create_task(run_export())
+    return JSONResponse({"ok": True, **state}, status_code=202)
+
+
+@app.get("/tactical/sessions/{session_id}/annotated-video")
+async def tactical_annotated_video_status(session_id: int):
+    session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    state = _video_exports.get(session_id)
+    if state:
+        return JSONResponse({"ok": True, **state})
+    status = session.get("export_status") or "not_started"
+    result = {
+        "ok": True,
+        "status": status,
+        "progress": session.get("export_progress") or 0,
+        "error": session.get("export_error"),
+    }
+    if session.get("annotated_path"):
+        result["download"] = f"/tactical/sessions/{session_id}/download/annotated"
+    return JSONResponse(result)
+
+
 @app.get("/tactical/sessions/{session_id}/download/{kind}")
 async def tactical_download(session_id: int, kind: str):
-    if kind not in {"report", "tracking", "metrics", "events"}:
+    if kind not in {"report", "pdf", "tracking", "metrics", "events", "dataset", "annotated"}:
         raise HTTPException(status_code=404, detail="Artifact not found")
     session = await get_tactical_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if kind == "dataset":
+        snapshots = await get_tactical_snapshots(session_id)
+        events = await get_tactical_events(session_id)
+        player_labels = await get_tactical_player_labels(session_id)
+        from src.session_analytics import build_session_analytics
+        content = json.dumps({
+            "format": "footballvision-dataset-v1",
+            "session": session,
+            "analytics": build_session_analytics(snapshots, events),
+            "snapshots": snapshots,
+            "events": events,
+            "player_labels": player_labels,
+        }, indent=2)
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="session-{session_id}-dataset.json"'
+                )
+            },
+        )
     if not session or not session.get(f"{kind}_path"):
         raise HTTPException(status_code=404, detail="Build the report first")
     path = (ROOT / session[f"{kind}_path"]).resolve()
@@ -640,7 +949,12 @@ async def tactical_download(session_id: int, kind: str):
         raise HTTPException(status_code=404, detail="Artifact not found")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact file is missing")
-    media = "image/png" if kind == "report" else "text/csv"
+    media = (
+        "image/png" if kind == "report"
+        else "application/pdf" if kind == "pdf"
+        else "video/mp4" if kind == "annotated"
+        else "text/csv"
+    )
     return FileResponse(path, media_type=media, filename=path.name)
 
 

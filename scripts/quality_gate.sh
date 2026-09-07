@@ -14,7 +14,7 @@ fi
 if command -v node >/dev/null 2>&1; then
   node --check ui/static/js/tactical.js
 fi
-bash -n FootballVision.command scripts/download_weights.sh scripts/quality_gate.sh
+bash -n FootballVision.command scripts/build_macos_app.sh scripts/download_weights.sh scripts/quality_gate.sh
 if [[ "${RUN_GOLDEN:-0}" == "1" ]]; then
   "$PYTHON_BIN" scripts/golden_video_benchmark.py
 fi
