@@ -1,12 +1,35 @@
 # FootballVision
 
-Real-time football (soccer) video analysis for local match footage and macOS
-screen capture. The primary tactical dashboard detects and tracks players,
-projects them onto a top-down pitch, separates teams, calculates team shape and
-pitch-control metrics, and retrieves similar earlier situations.
+[![Quality gate](https://github.com/heetdalsania/FootballVision/actions/workflows/ci.yml/badge.svg)](https://github.com/heetdalsania/FootballVision/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](#requirements)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Local first](https://img.shields.io/badge/processing-local--first-6f42c1)](#privacy-and-limitations)
 
-Everything in the default workflow runs locally with free, open-source
-components. It does not require an account, API key, or cloud upload.
+Local-first football (soccer) video analysis for match recordings and live
+macOS screen capture. FootballVision detects and tracks players, projects them
+onto a top-down pitch, separates teams, measures tactical shape and pitch
+control, builds a reviewable event timeline, and exports post-match analysis.
+
+The default workflow uses free, open-source components. It requires no account,
+API key, subscription, or cloud upload.
+
+![Example post-match tactical report](analysis/sample_v2_report.png)
+
+## Highlights
+
+| Workflow | What FootballVision provides |
+| --- | --- |
+| Live analysis | macOS display/window capture, real-time pitch view, team shape, possession, match phase, and a floating always-on-top monitor |
+| Video review | Upload or select local footage, pause/resume/stop jobs, scrub saved pitch states, and jump from events to nearby frames |
+| Match intelligence | Conservative passes, turnovers, carries, restarts, and shot candidates with confirm/reject/rename review controls |
+| Tactical analysis | Heatmaps, formations, compactness, line height, final-third presence, territory control, pass networks, and session comparison |
+| Exports | Tracking, metrics, and reviewed-event CSV; dataset JSON; PNG and PDF reports; local annotated MP4 and event clips |
+| Privacy | Match footage, model weights, the SQLite history, and generated artifacts remain on your machine |
+
+> **Project status:** active public beta. The application and deterministic test
+> suite are usable today, but computer-vision accuracy varies with footage. Treat
+> inferred events and tactical measurements as analyst-assist output, not ground
+> truth.
 
 ## Requirements
 
@@ -14,7 +37,7 @@ components. It does not require an account, API key, or cloud upload.
 - Python 3.11 or 3.12 recommended
 - About 450 MB for the three football model files
 
-## Setup
+## Quick start
 
 ```bash
 python3.12 -m venv .venv
@@ -28,6 +51,15 @@ The model script skips files already present in `weights/`. Recordings can be
 uploaded directly from the source picker, or placed in `data/` or `uploads/`.
 Uploads stay on this computer.
 
+Start the server:
+
+```bash
+python main.py
+```
+
+Then open <http://localhost:8000> and choose a video, window, or display from
+**Start Analysis**. A local video is the most reproducible first test.
+
 For live capture, grant the terminal or app running FootballVision access in
 **System Settings → Privacy & Security → Screen & System Audio Recording**, then
 restart that app.
@@ -36,21 +68,14 @@ For a match playing in a browser, select the browser under **Windows**, not
 **Entire screen**. FootballVision automatically opens an always-on-top floating
 monitor in supported browsers, with a separate-window fallback and a native
 macOS panel when the in-app browser blocks popups. Leave the match as the active
-tab in its original window; that source
-window may be behind the monitor but must not be minimised or moved to an
+tab in its original window; that source window may be behind the monitor but
+must not be minimized or moved to an
 inactive macOS Space. Browser tabs are not independent macOS capture sources,
 so switching the selected source window back to the FootballVision tab changes
 what is being captured.
 
-## Run
+## Using FootballVision
 
-```bash
-source .venv/bin/activate
-python main.py
-```
-
-Open <http://localhost:8000>. Choose a video, window, or display from **Start
-Analysis**. A video file is the most reproducible way to verify the pipeline.
 Sessions and sampled pitch states are saved in local SQLite history. Video jobs
 finish automatically at the end of the file and expose pause, resume, progress,
 and stop controls. **Build exports** creates tracking, metrics, and reviewed
@@ -60,7 +85,7 @@ printable two-page PDF whenever the session contains resolved team data.
 On macOS, after setup you can also double-click `FootballVision.command`; it
 starts the local server and opens the dashboard in your browser.
 
-To check a machine or build a Finder-launchable app bundle:
+To check your installation or build a Finder-launchable app bundle:
 
 ```bash
 ./scripts/diagnose.py
@@ -91,7 +116,8 @@ the source audio track.
 Useful options:
 
 ```bash
-python main.py --host 127.0.0.1 --port 8080
+python main.py --port 8080
+python main.py --host 0.0.0.0  # expose to your LAN only if you understand the risk
 python main.py --reload  # development only
 python main.py --demo    # legacy synthetic Coach demo
 ```
@@ -143,7 +169,7 @@ thresholds. GitHub Actions runs the deterministic test gate on every push and
 pull request; the media/model benchmark stays local because large videos and
 weights are intentionally not committed.
 
-## Architecture
+## Repository map
 
 | Area | Responsibility |
 | --- | --- |
@@ -162,18 +188,33 @@ weights are intentionally not committed.
 | `src/pdf_report.py` | Printable two-page post-match PDF |
 | `src/session_report.py` | Report, CSV, and PDF generation from saved sessions |
 | `db/session.py` | SQLite sessions, snapshots, events, labels, and artifact metadata |
+| `tests/` | Deterministic geometry, lifecycle, analytics, export, and product regression tests |
+| `benchmarks/` | Checked-in calibration, latency, detector, and golden-sample evidence |
 
 `src/pipeline.py` and the `/coach` and `/fan` pages are the earlier NFL-oriented
 prototype. The root route intentionally opens the football tactical product.
 
-## Notes
+## Privacy and limitations
 
 - Processing stays local; videos are not uploaded to an external service.
 - `weights/`, videos, clips, captures, the SQLite database, and API keys are
   intentionally ignored by Git.
+- Browser DRM may produce a black capture even when the match is visible. The
+  application does not and should not attempt to bypass protected playback.
+- For live window capture, the selected match window must not be minimized or
+  moved to an inactive macOS Space.
 - Detection quality still depends on camera angle, resolution, occlusion, and
   the supplied model weights. Passing software tests does not guarantee perfect
   perception on every broadcast.
+- Annotated MP4 export is intentionally silent and does not preserve source
+  audio.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting. Please include
+reproducible footage characteristics without uploading copyrighted match video.
 
 ## License and attribution
 

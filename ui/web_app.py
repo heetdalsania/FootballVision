@@ -4,6 +4,7 @@ Beautiful, interactive web UI for game film analysis.
 """
 
 import os
+import secrets
 import sys
 import uuid
 import json
@@ -60,7 +61,9 @@ def create_app():
     
     app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
     app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max
-    app.secret_key = 'nfl-vision-secret-key'
+    # This legacy local UI does not need a stable signing key. Generate one for
+    # each process instead of shipping a shared placeholder in public source.
+    app.secret_key = os.environ.get("FOOTBALLVISION_FLASK_SECRET") or secrets.token_hex(32)
     
     # =========================================================================
     # ROUTES

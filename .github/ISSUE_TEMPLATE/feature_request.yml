@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a focused, local-first improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior, not only an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Live capture
+        - Detection and tracking
+        - Match intelligence
+        - Review and analytics
+        - Reports and exports
+        - User interface
+        - Reliability and testing
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and alternatives
+      description: Note platform, privacy, performance, or accuracy tradeoffs.
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Project principles
+      options:
+        - label: The default implementation can remain local-first and usable without an account.
+          required: true

@@ -36,7 +36,7 @@ BANNER = """
 
 def main():
     parser = argparse.ArgumentParser(description="FootballVision Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, default=8000, help="Port number")
     parser.add_argument("--demo", action="store_true",
                         help="Use synthetic DemoSource (no real screen capture)")

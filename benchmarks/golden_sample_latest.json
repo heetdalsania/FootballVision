@@ -14,9 +14,9 @@
     "possession_rate": 0.4333,
     "formation_ready_rate": 0.8,
     "events_emitted": 1,
-    "mean_latency_ms": 943.4,
-    "p95_latency_ms": 2458.6,
-    "throughput_fps": 1.057
+    "mean_latency_ms": 504.0,
+    "p95_latency_ms": 1271.2,
+    "throughput_fps": 1.979
   },
   "thresholds": {
     "football_rate": {

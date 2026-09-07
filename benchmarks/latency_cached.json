@@ -1,6 +1,6 @@
 {
   "arm": "cached",
-  "clip": "/Users/heet007/Documents/Career/Projects/FootballVision/data/sample.mp4",
+  "clip": "data/sample.mp4",
   "frames": 60,
   "config": {
     "player_imgsz": 1280,

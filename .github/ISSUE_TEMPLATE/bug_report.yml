@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible FootballVision problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not attach copyrighted footage, secrets, or private databases.
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: The output of `git rev-parse --short HEAD` is ideal.
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source type
+      options:
+        - Local video file
+        - macOS window capture
+        - macOS display capture
+        - Demo source
+        - Export or session history
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS/Linux version, Python version, hardware, and browser where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start FootballVision with ...
+        2. Choose ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Redact usernames, local paths, credentials, and private data.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: I removed secrets, private data, and copyrighted footage.
+          required: true
