@@ -213,6 +213,7 @@ prototype. The root route intentionally opens the football tactical product.
 
 Bug reports and focused pull requests are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations. Use
 [SECURITY.md](SECURITY.md) for private vulnerability reporting. Please include
 reproducible footage characteristics without uploading copyrighted match video.
 
