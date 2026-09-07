@@ -27,7 +27,7 @@ python-multipart>=0.0.9     # Form/file upload support
 jinja2>=3.1.0               # HTML templating
 
 # Database
-aiosqlite>=0.20.0           # Async SQLite
+aiosqlite>=0.22.1           # Async SQLite
 
 # Visualization
 matplotlib>=3.7.0           # Heatmap rendering
