@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -62,6 +63,7 @@ from db.session import (
 )
 
 logger = logging.getLogger(__name__)
+_live_monitor_process: Optional[subprocess.Popen] = None
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -69,10 +71,14 @@ logger = logging.getLogger(__name__)
 
 
 async def _shutdown_pipelines():
+    global _live_monitor_process
     if _pipeline.is_running:
         await _pipeline.stop()
     if _tac.is_running:
         await _tac.stop()
+    if _live_monitor_process is not None and _live_monitor_process.poll() is None:
+        _live_monitor_process.terminate()
+    _live_monitor_process = None
 
 
 @asynccontextmanager
@@ -517,7 +523,44 @@ async def tactical_calibrate(body: TacticalCalibrationRequest):
 
 @app.get("/tactical/stats")
 async def tactical_stats():
-    return JSONResponse(_tac.stats())
+    stats = _tac.stats()
+    stats["session_id"] = _tactical_session_id
+    return JSONResponse(stats)
+
+
+@app.get("/tactical/live")
+async def tactical_live():
+    """Current serializable frame and state for the native floating monitor."""
+    return JSONResponse({
+        "running": _tac.is_running,
+        "paused": bool(getattr(_tac, "_paused", False)),
+        "session_id": _tactical_session_id,
+        "payload": getattr(_tac, "_last_payload", {}) or {},
+    })
+
+
+@app.post("/tactical/monitor/open")
+async def tactical_open_monitor(request: Request):
+    """Open the dependency-free macOS floating monitor when popups are blocked."""
+    global _live_monitor_process
+    if sys.platform != "darwin":
+        return JSONResponse(
+            {"ok": False, "error": "The native floating monitor requires macOS"},
+            status_code=409,
+        )
+    if _live_monitor_process is not None and _live_monitor_process.poll() is None:
+        return JSONResponse({"ok": True, "mode": "native", "already_open": True})
+    script = ROOT / "scripts" / "live_monitor.py"
+    try:
+        _live_monitor_process = subprocess.Popen(
+            [sys.executable, str(script), "--url", str(request.base_url).rstrip("/")],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "mode": "native"})
 
 @app.get("/tactical/similar")
 async def tactical_similar(k: int = 4):
@@ -985,6 +1028,12 @@ async def tactical_ask(body: AskRequest):
 async def ws_tactical(websocket: WebSocket):
     await websocket.accept()
     _tac.add_client(websocket)
+    # A companion monitor can connect after analysis has already started, or
+    # while it is paused. Send the most recent frame immediately instead of
+    # leaving the new window blank until another inference cycle completes.
+    last_payload = getattr(_tac, "_last_payload", None)
+    if last_payload:
+        await websocket.send_text(json.dumps(last_payload))
     try:
         while True:
             await websocket.receive_text()

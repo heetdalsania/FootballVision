@@ -295,10 +295,14 @@ def _sck_capture(win, scale: int = 2):
         return None, None
     try:
         fr = win.frame()
+        pixel_width = int(fr.size.width * scale)
+        pixel_height = int(fr.size.height * scale)
+        if not (16 <= pixel_width <= 16384 and 16 <= pixel_height <= 16384):
+            return None, -2
         flt = SCK.SCContentFilter.alloc().initWithDesktopIndependentWindow_(win)
         cfg = SCK.SCStreamConfiguration.alloc().init()
-        cfg.setWidth_(int(fr.size.width * scale))
-        cfg.setHeight_(int(fr.size.height * scale))
+        cfg.setWidth_(pixel_width)
+        cfg.setHeight_(pixel_height)
         cfg.setShowsCursor_(False)
     except Exception:
         return None, None
@@ -333,7 +337,7 @@ def _cgimage_to_bgr(image) -> Optional[np.ndarray]:
         return None
     width = Quartz.CGImageGetWidth(image)
     height = Quartz.CGImageGetHeight(image)
-    if width == 0 or height == 0:
+    if not (0 < width <= 16384 and 0 < height <= 16384):
         return None
     bytes_per_row = Quartz.CGImageGetBytesPerRow(image)
     provider = Quartz.CGImageGetDataProvider(image)

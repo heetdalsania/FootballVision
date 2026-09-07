@@ -135,6 +135,43 @@ def test_primary_pages_and_assets_render_without_server_errors():
     asyncio.run(check())
 
 
+def test_tactical_stats_exposes_session_for_companion_monitor(monkeypatch):
+    class RunningPipeline:
+        def stats(self):
+            return {"running": True, "paused": False, "source": "window 42"}
+
+    monkeypatch.setattr(api, "_tac", RunningPipeline())
+    monkeypatch.setattr(api, "_tactical_session_id", 456)
+
+    response = asyncio.run(api.tactical_stats())
+
+    assert _json(response) == {
+        "running": True,
+        "paused": False,
+        "source": "window 42",
+        "session_id": 456,
+    }
+
+
+def test_tactical_live_exposes_latest_frame_for_native_monitor(monkeypatch):
+    class RunningPipeline:
+        is_running = True
+        _paused = True
+        _last_payload = {"type": "tactical", "frame_id": 17, "frame_b64": "abc"}
+
+    monkeypatch.setattr(api, "_tac", RunningPipeline())
+    monkeypatch.setattr(api, "_tactical_session_id", 789)
+
+    response = asyncio.run(api.tactical_live())
+
+    assert _json(response) == {
+        "running": True,
+        "paused": True,
+        "session_id": 789,
+        "payload": {"type": "tactical", "frame_id": 17, "frame_b64": "abc"},
+    }
+
+
 def test_shutdown_stops_both_products(monkeypatch):
     legacy = _FakePipeline(running=True)
     tactical = _FakePipeline(running=True)

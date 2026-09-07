@@ -32,6 +32,16 @@ For live capture, grant the terminal or app running FootballVision access in
 **System Settings → Privacy & Security → Screen & System Audio Recording**, then
 restart that app.
 
+For a match playing in a browser, select the browser under **Windows**, not
+**Entire screen**. FootballVision automatically opens an always-on-top floating
+monitor in supported browsers, with a separate-window fallback and a native
+macOS panel when the in-app browser blocks popups. Leave the match as the active
+tab in its original window; that source
+window may be behind the monitor but must not be minimised or moved to an
+inactive macOS Space. Browser tabs are not independent macOS capture sources,
+so switching the selected source window back to the FootballVision tab changes
+what is being captured.
+
 ## Run
 
 ```bash

@@ -27,6 +27,9 @@
   let playerLabels = {};
   let calibrationPoints = [];
   let calibrating = false;
+  let monitorWindow = null;
+  let syncingSession = false;
+  const IS_MONITOR = new URLSearchParams(location.search).get("monitor") === "1";
   const sessionCache = new Map();
   let timelineSignature = "";
 
@@ -186,6 +189,7 @@
 
   // ── Source picker ────────────────────────────────────────────────────
   el("btn-start").addEventListener("click", openPicker);
+  el("btn-monitor").addEventListener("click", () => openMonitorWindow(true));
   el("btn-stop").addEventListener("click", stopSession);
   el("btn-pause").addEventListener("click", togglePause);
   el("btn-calibrate").addEventListener("click", toggleCalibration);
@@ -259,11 +263,17 @@
 
       const wins = src.windows || [], disps = src.displays || [];
       if (wins.length) {
-        grid.appendChild(section("Windows", "Includes windows on other Spaces. The chosen window is raised on start and must stay visible while analysing."));
+        grid.appendChild(section(
+          "Windows · recommended for live matches",
+          "A floating FootballVision monitor opens automatically. Keep the match as the active tab in the selected window; it may sit behind the monitor, but do not minimise it."
+        ));
         wins.forEach((w) => grid.appendChild(winCard(w)));
       }
       if (disps.length) {
-        grid.appendChild(section("Entire screen", ""));
+        grid.appendChild(section(
+          "Entire screen · second display only",
+          "Everything visible on that display is captured, including FootballVision. Use Window capture when working on one screen."
+        ));
         disps.forEach((d) => grid.appendChild(dispCard(d)));
       }
       if (!videos.length && !wins.length && !disps.length) {
@@ -275,6 +285,68 @@
   }
 
   function closePicker() { el("source-modal").classList.remove("open"); }
+
+  async function openMonitorWindow(focusWindow) {
+    if (IS_MONITOR) return window;
+    if (monitorWindow && !monitorWindow.closed) {
+      if (focusWindow) monitorWindow.focus();
+      return monitorWindow;
+    }
+    const width = Math.max(720, Math.min(1180, Math.round(screen.availWidth * .68)));
+    const height = Math.max(680, Math.min(940, Math.round(screen.availHeight * .9)));
+    const availLeft = Number.isFinite(screen.availLeft) ? screen.availLeft : 0;
+    const availTop = Number.isFinite(screen.availTop) ? screen.availTop : 0;
+    const left = Math.max(0, availLeft + screen.availWidth - width);
+    const top = Math.max(0, availTop + Math.round((screen.availHeight - height) / 2));
+
+    // Chromium's Document Picture-in-Picture window stays above the match,
+    // including in fullscreen, which is the best one-screen experience. It is
+    // feature-detected; Safari and embedded browsers fall back to a popup.
+    if ("documentPictureInPicture" in window) {
+      try {
+        monitorWindow = await window.documentPictureInPicture.requestWindow({width, height});
+        monitorWindow.document.title = "FootballVision — Live Monitor";
+        monitorWindow.document.body.style.cssText = "margin:0;background:#0a0c11;overflow:hidden";
+        const frame = monitorWindow.document.createElement("iframe");
+        frame.src = "/tactical?monitor=1";
+        frame.title = "FootballVision live monitor";
+        frame.style.cssText = "display:block;width:100vw;height:100vh;border:0";
+        monitorWindow.document.body.appendChild(frame);
+        return monitorWindow;
+      } catch (_) {
+        setNotice("Floating picture-in-picture was unavailable; opening a separate monitor window instead.");
+      }
+    }
+
+    // On macOS, prefer a native AppKit panel when Document PiP is unavailable.
+    // Embedded browsers can appear to support popups while opening them in an
+    // inaccessible hidden surface, so popup feature detection is not enough.
+    try {
+      const response = await fetch("/tactical/monitor/open", {method:"POST"});
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        setNotice("Native floating monitor opened. It stays above the match and follows the live session.");
+        return {native:true};
+      }
+    } catch (_) {}
+
+    if (typeof window.open !== "function") {
+      setNotice("This browser cannot open a monitor window. Open FootballVision in a regular browser or use a second display.", true);
+      return null;
+    }
+
+    monitorWindow = window.open(
+      "/tactical?monitor=1",
+      "footballvision-live-monitor",
+      `popup=yes,width=${width},height=${height},left=${left},top=${top}`
+    );
+    if (!monitorWindow) {
+      setNotice("Your browser blocked the live monitor. Allow pop-ups for localhost, then choose the match window again.", true);
+      return null;
+    }
+    if (focusWindow) monitorWindow.focus();
+    return monitorWindow;
+  }
 
   function section(title, sub) {
     const d = document.createElement("div");
@@ -325,16 +397,23 @@
     // macOS draws no pixels for those, so they cannot be captured until
     // raised — starting analysis brings the window forward automatically.
     const hidden = w.on_screen === false;
-    const note = hidden
+    let note = hidden
       ? '<div class="src-meta warn-text">Not on screen — will be brought to the front</div>'
       : "";
+    if (String(w.title || "").toLowerCase().includes("footballvision")) {
+      note += '<div class="src-meta warn-text">Choose this if the match is another tab in this window; switch to that tab after capture starts.</div>';
+    }
     return card(
       `<div class="src-icon mon"></div>
        <div class="src-name">${esc(w.app)}</div>
        <div class="src-meta">${esc(trunc(w.title || w.app, 34))}</div>
        <div class="src-meta">${w.width} × ${w.height}</div>
        ${note}`,
-      () => begin({ window_id: w.id })
+      async () => {
+        const monitor = await openMonitorWindow(false);
+        if (!monitor) { closePicker(); return; }
+        begin({ window_id: w.id });
+      }
     );
   }
   function dispCard(d) {
@@ -360,25 +439,52 @@
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed to start");
-      running = true;
-      paused = false;
-      currentSessionId = data.session_id || null;
-      playerLabels = {};
-      el("analytics-card").style.display = "none";
-      el("timeline-review").style.display = "none";
-      btn.style.display = "none";
-      el("btn-stop").style.display = "";
-      el("btn-pause").style.display = "";
-      el("btn-calibrate").style.display = "";
-      el("btn-pause").textContent = "Pause";
-      if (data.duration_s) el("job-progress").style.display = "block";
-      el("source-label").textContent = data.source || "";
-      setStatus(true);
-      setNotice("");
-      connect();
+      adoptRunningSession(data);
+      setNotice(source.window_id != null
+        ? "Live monitor connected. Keep the match as the active tab in the selected browser window; FootballVision can stay visible in its separate monitor."
+        : "");
     } catch (err) {
       btn.disabled = false; btn.textContent = "Start Analysis";
       setNotice("Could not start: " + err.message, true);
+    }
+  }
+
+  function adoptRunningSession(data) {
+    running = true;
+    paused = !!data.paused;
+    currentSessionId = data.session_id || currentSessionId;
+    playerLabels = {};
+    el("analytics-card").style.display = "none";
+    el("timeline-review").style.display = "none";
+    el("btn-start").style.display = "none";
+    el("btn-start").disabled = false;
+    el("btn-stop").style.display = "";
+    el("btn-pause").style.display = "";
+    el("btn-calibrate").style.display = "";
+    el("btn-pause").textContent = paused ? "Resume" : "Pause";
+    if (data.duration_s || data.source_duration_s) el("job-progress").style.display = "block";
+    el("source-label").textContent = data.source || "";
+    setStatus(true);
+    if (paused) el("status-text").textContent = "Paused";
+    if (!ws || ws.readyState > 1) connect();
+  }
+
+  async function syncRunningSession() {
+    if (syncingSession || running) return;
+    syncingSession = true;
+    try {
+      const res = await fetch("/tactical/stats");
+      const data = await res.json();
+      if (data.running) {
+        adoptRunningSession(data);
+        if (IS_MONITOR) {
+          setNotice("Live monitor connected. Keep the match as the active tab in its original browser window; it can remain behind this monitor.");
+        }
+      }
+    } catch (_) {
+      if (IS_MONITOR) setNotice("Waiting for the local FootballVision server…", true);
+    } finally {
+      syncingSession = false;
     }
   }
 
@@ -1198,7 +1304,14 @@
     }
   }
 
+  if (IS_MONITOR) {
+    document.body.classList.add("monitor-mode");
+    document.title = "FootballVision — Live Monitor";
+    setNotice("Live monitor ready. Start window capture in the original FootballVision window, then keep the match as that window's active tab.");
+    setInterval(syncRunningSession, 1000);
+  }
   drawPitch(null);
   loadHistory();
+  syncRunningSession();
   window.FootballVisionTactical = { render };
 })();

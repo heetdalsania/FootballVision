@@ -61,6 +61,13 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   .btn.primary:hover:not(:disabled) { background: #ef5f2b; color: #fff; }
   .btn.danger { border-color: var(--err); color: var(--err); }
+  body.monitor-mode #btn-monitor { display:none; }
+  body.monitor-mode .topbar { gap:9px; padding:0 12px; }
+  body.monitor-mode .layout { grid-template-columns:minmax(390px, 1fr) 330px; }
+  @media (max-width: 880px) {
+    body.monitor-mode .layout { grid-template-columns:minmax(340px, 1fr) 300px; }
+    body.monitor-mode #source-label, body.monitor-mode .job-progress { display:none !important; }
+  }
 
   /* Main area */
   .main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
@@ -264,7 +271,7 @@
 <div class="overlay" id="source-modal">
   <div class="modal" role="dialog" aria-modal="true">
     <h2>Choose what to analyse</h2>
-    <div class="sub">A video file is the most reliable option. Screen capture only sees what macOS is actually rendering.</div>
+    <div class="sub">For a browser match, choose its window. FootballVision opens a floating live monitor so the match can remain the active tab.</div>
     <div id="source-grid"></div>
     <div id="source-state" class="modal-state" style="display:none"></div>
     <div class="modal-foot">
@@ -312,6 +319,7 @@
     <span class="meta" id="elapsed">00:00</span>
     <span class="meta" id="frame-counter">Frame 0</span>
     <div class="job-progress" id="job-progress"><span class="meta" id="job-progress-text">0%</span><div class="job-progress-track"><i id="job-progress-fill"></i></div></div>
+    <button class="btn" id="btn-monitor">Open floating monitor</button>
     <button class="btn primary" id="btn-start">Start Analysis</button>
     <button class="btn" id="btn-calibrate" style="display:none">Correct pitch</button>
     <button class="btn" id="btn-pause" style="display:none">Pause</button>
@@ -453,6 +461,6 @@
   </aside>
 </div>
 
-<script src="/static/js/tactical.js?v=32"></script>
+<script src="/static/js/tactical.js?v=35"></script>
 </body>
 </html>
