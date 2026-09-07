@@ -7,7 +7,7 @@
 # Core ML/CV (free/open source; review each upstream license for your use case)
 ultralytics>=8.0.0          # YOLOv8 detection
 opencv-python>=4.8.0        # Image/video processing
-numpy>=1.24.0               # Array operations
+numpy>=2.5.2               # Array operations
 torch>=2.0.0                # PyTorch models
 
 # macOS Screen Capture (Apple frameworks through the open-source PyObjC bridge)
